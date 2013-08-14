@@ -589,10 +589,7 @@ class CheckConfig:
                 self.log.error('CONF: scpforce must be a string!')
 
         if self.conf_raw.has_key('intro'):
-            try:
-                self.conf['intro'] = eval(self.conf_raw['intro'])
-            except:
-                self.conf['intro'] = intro
+            self.conf['intro'] = self.myeval(self.conf_raw['intro'])
         else:
             self.conf['intro'] = intro
 
