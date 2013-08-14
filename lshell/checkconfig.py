@@ -32,7 +32,7 @@ import glob
 
 from utils import get_aliases
 
-__version__ = "0.9.16"
+__version__ = "0.9.16.2-om8"
 
 # Required config variable list per user
 required_config = ['allowed', 'forbidden', 'warning_counter']
