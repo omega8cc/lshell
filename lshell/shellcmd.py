@@ -27,7 +27,6 @@ import signal
 import readline
 import glob
 
-from checkconfig import CheckConfig
 from utils import get_aliases
 
 
@@ -91,11 +90,12 @@ class ShellCmd(cmd.Cmd, object):
         """
 
         # in case the configuration file has been modified, reload it
-#         if self.conf['config_mtime'] != os.path.getmtime(self.conf['configfile']):
-#             self.conf = CheckConfig(['--config', \
-#                                      self.conf['configfile']]).returnconf()
-#             self.prompt = '%s:~$ ' % self.setprompt(self.conf)
-#             self.log = self.conf['logpath']
+        if self.conf['config_mtime'] != os.path.getmtime(self.conf['configfile']):
+            from lshell.checkconfig import CheckConfig
+            self.conf = CheckConfig(['--config', \
+                                     self.conf['configfile']]).returnconf()
+            self.prompt = '%s:~$ ' % self.setprompt(self.conf)
+            self.log = self.conf['logpath']
 
         if self.g_cmd in ['quit', 'exit', 'EOF']:
             self.log.error('Exited')
@@ -498,12 +498,7 @@ class ShellCmd(cmd.Cmd, object):
         if path is self.conf['home_path']:
             self.prompt = '%s:~$ ' % self.promptbase
         elif self.conf['prompt_short'] == 1:
-            if path.split('/')[-2] == 'home':
-                self.prompt = '%s:~$ ' % self.promptbase
-            elif path.split('/')[-2] == 'clients':
-                self.prompt = '%s:[sites@%s]$ ' % (self.promptbase, path.split('/')[-1])
-            else:
-                self.prompt = '%s:[%s]$ ' % (self.promptbase, path.split('/')[-1])
+            self.prompt = '%s: %s$ ' % (self.promptbase, path.split('/')[-1])
         elif re.findall(self.conf['home_path'], path):
             self.prompt = '%s:~%s$ ' % ( self.promptbase, \
                                          path.split(self.conf['home_path'])[1])
