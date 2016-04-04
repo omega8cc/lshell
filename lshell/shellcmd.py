@@ -92,14 +92,14 @@ class ShellCmd(cmd.Cmd, object):
         self.g_arg = os.path.expandvars(self.g_arg)
 
         # in case the configuration file has been modified, reload it
-#         if self.conf['config_mtime'] != os.path.getmtime(
-#                 self.conf['configfile']):
-#             from lshell.checkconfig import CheckConfig
-#             self.conf = CheckConfig(['--config', self.conf['configfile']],
-#                                     refresh=1).returnconf()
-#             self.conf['promptprint'] = utils.updateprompt(os.getcwd(),
-#                                                           self.conf)
-#             self.log = self.conf['logpath']
+        if self.conf['config_mtime'] != os.path.getmtime(
+                self.conf['configfile']):
+            from lshell.checkconfig import CheckConfig
+            self.conf = CheckConfig(['--config', self.conf['configfile']],
+                                    refresh=1).returnconf()
+            self.conf['promptprint'] = utils.updateprompt(os.getcwd(),
+                                                          self.conf)
+            self.log = self.conf['logpath']
 
         if self.g_cmd in ['quit', 'exit', 'EOF']:
             self.log.error('Exited')
