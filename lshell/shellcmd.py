@@ -198,7 +198,9 @@ class ShellCmd(cmd.Cmd, object):
                                                       self.conf)
 
             else:
-                self.retcode = utils.exec_cmd(self.g_line)
+                self.retcode = utils.exec_cmd('set -m; %s' % self.g_line)
+                # old: os.system('set -m; %s' % self.g_line)
+                # new: self.retcode = utils.exec_cmd(self.g_line)
 
         elif self.g_cmd not in ['', '?', 'help', None]:
             self.log.warn('INFO: unknown syntax -> "%s"' % self.g_line)
