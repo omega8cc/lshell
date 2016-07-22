@@ -180,8 +180,6 @@ class TestFunctions(unittest.TestCase):
         self.child.expect('%s:~\$' % self.user)
         result = self.child.before.decode('utf8').strip()
 
-        print(expected)
-        print(result)
         self.assertEqual(expected, result)
 
     def test_16_exitcode_with_separator_external_cmd(self):
@@ -339,13 +337,52 @@ class TestFunctions(unittest.TestCase):
                                    % (TOPDIR, TOPDIR))
         self.child.expect('%s:~\$' % self.user)
 
-        expected = "foo"
         self.child.sendline('cat')
         self.child.sendline(' foo ')
         self.child.sendcontrol('c')
         self.child.expect('%s:~\$' % self.user)
-        result = self.child.before.decode('utf8').split('\n')[1].strip()
+        try:
+            result = self.child.before.decode('utf8').split('\n')[1].strip()
+            # both behaviors are correct
+            if result.startswith('foo'):
+                expected = 'foo'
+            elif result.startswith('^C'):
+                expected = '^C'
+        except IndexError:
+            # outputs u' ^C' on Debian
+            expected = u'^C'
+            result = self.child.before.decode('utf8').strip()
         self.assertIn(expected, result)
+
+    def test_26_cmd_completion_dot_slash(self):
+        """ F26 | command completion: tab to list ./foo1 ./foo2 """
+        self.child = pexpect.spawn('%s/bin/lshell '
+                                   '--config %s/etc/lshell.conf '
+                                   '--allowed "+ [\'./foo1\', \'./foo2\']"'
+                                   % (TOPDIR, TOPDIR))
+        self.child.expect('%s:~\$' % self.user)
+
+        expected = u'./\x07foo\x07\r\nfoo1  foo2'
+        self.child.sendline('./\t\t\t')
+        self.child.expect('%s:~\$' % self.user)
+        result = self.child.before.decode('utf8').strip()
+
+        self.assertEqual(expected, result)
+
+    def test_27_checksecure_awk(self):
+        """ F27 | checksecure awk script with /bin/bash """
+        self.child = pexpect.spawn('%s/bin/lshell '
+                                   '--config %s/etc/lshell.conf '
+                                   '--allowed "+ [\'awk\']"'
+                                   % (TOPDIR, TOPDIR))
+        self.child.expect('%s:~\$' % self.user)
+
+        expected = u'*** forbidden path: /bin/bash'
+        self.child.sendline('awk \'BEGIN {system("/bin/bash")}\'')
+        self.child.expect('%s:~\$' % self.user)
+        result = self.child.before.decode('utf8').split('\n')[1].strip()
+
+        self.assertEqual(expected, result)
 
 
 if __name__ == '__main__':
