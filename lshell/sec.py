@@ -174,10 +174,6 @@ def check_secure(line, conf, strict=None, ssh=None):
             ret_check_path, conf = check_path(item, conf, strict=strict)
             returncode += ret_check_path
 
-    # ignore quoted text
-    line = re.sub(r'\"(.+?)\"', '', line)
-    line = re.sub(r'\'(.+?)\'', '', line)
-
     if re.findall('[:cntrl:].*\n', line):
         ret, conf = warn_count('syntax',
                                oline,
