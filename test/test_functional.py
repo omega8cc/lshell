@@ -402,5 +402,14 @@ class TestFunctions(unittest.TestCase):
 
         self.assertIn(expected, result)
 
+    def test_29_help_cmd(self):
+        """ F29 | make sure help <cmd> sends warning to user """
+        expected = u"Help! Help! Help! Help! Please contact your system's" \
+                   ' administrator.\r\n'
+        self.child.sendline('help bleh')
+        self.child.expect('%s:~\$' % self.user)
+        result = self.child.before.decode('utf8').split('\n', 1)[1]
+        self.assertEqual(expected, result)
+
 if __name__ == '__main__':
     unittest.main()
