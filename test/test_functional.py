@@ -384,14 +384,14 @@ class TestFunctions(unittest.TestCase):
 
         self.assertEqual(expected, result)
 
-    def test_28_catch_lnext_terminal_ctrl(self):
-        """ F25 | test ctrl-v ctrl-j then command, forbidden/security """
+    def test_28_catch_terminal_ctrl_j(self):
+        """ F28 | test ctrl-v ctrl-j then command, forbidden/security """
         self.child = pexpect.spawn('%s/bin/lshell '
                                    '--config %s/etc/lshell.conf '
                                    % (TOPDIR, TOPDIR))
         self.child.expect('%s:~\$' % self.user)
 
-        expected = u'*** forbidden syntax: echo\r'
+        expected = u'*** forbidden control char: echo\r'
         self.child.send('echo')
         self.child.sendcontrol('v')
         self.child.sendcontrol('j')
@@ -402,14 +402,23 @@ class TestFunctions(unittest.TestCase):
 
         self.assertIn(expected, result)
 
-    def test_29_help_cmd(self):
-        """ F29 | make sure help <cmd> sends warning to user """
-        expected = u"Help! Help! Help! Help! Please contact your system's" \
-                   ' administrator.\r\n'
-        self.child.sendline('help bleh')
+    def test_29_catch_terminal_ctrl_k(self):
+        """ F29 | test ctrl-v ctrl-k then command, forbidden/security """
+        self.child = pexpect.spawn('%s/bin/lshell '
+                                   '--config %s/etc/lshell.conf '
+                                   % (TOPDIR, TOPDIR))
         self.child.expect('%s:~\$' % self.user)
-        result = self.child.before.decode('utf8').split('\n', 1)[1]
-        self.assertEqual(expected, result)
+
+        expected = u'*** forbidden control char: echo\x0b() bash && echo\r'
+        self.child.send('echo')
+        self.child.sendcontrol('v')
+        self.child.sendcontrol('k')
+        self.child.sendline('() bash && echo')
+        self.child.expect('%s:~\$' % self.user)
+
+        result = self.child.before.decode('utf8').split('\n')[1]
+
+        self.assertIn(expected, result)
 
 if __name__ == '__main__':
     unittest.main()
