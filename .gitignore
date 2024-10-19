@@ -3,3 +3,6 @@
 .coverage
 .tox/
 lshell.egg-info/
+etc/test.conf
+build/
+dist/
