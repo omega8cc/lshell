@@ -1,7 +1,7 @@
 .\"
 .\"   Man page for the Limited Shell (lshell) project.
 .\"
-.TH lshell 1 "October, 2024" "v0.10"
+.TH lshell 1 "October, 2024" "v0.10.7"
 
 .SH NAME
 lshell \- Limited Shell
@@ -11,8 +11,10 @@ lshell \- Limited Shell
 [\fIOPTIONS\fR]
 
 .SH DESCRIPTION
-\fBlshell\fR provides a limited shell configured per user.
-The configuration is done quite simply using a configuration file.
+\fBlshell\fR provides a limited shell configured per user. The configuration is done 
+quite simply using a configuration file. You can also use lshell within scripts by 
+adding the appropriate shebang (#!/usr/bin/lshell) to your script file.
+
 Coupled with ssh's 
 .I authorized_keys 
 or with
@@ -148,9 +150,19 @@ using the -exec flag.
 command aliases list (similar to bash's alias directive)
 .TP
 .I allowed
-a list of the allowed commands or set to 'all' to allow all commands in user's \
-PATH
-
+A list of allowed commands, or set to 'all' to allow all commands in the user's PATH.
+.RS
+.BR \ \ \ \ -
+If a command is specified without arguments (e.g., 'echo'), the command is allowed to run with any arguments.
+.RE
+.RS
+.BR \ \ \ \ -
+If a command is specified with exact arguments (e.g., 'echo asd'), only that specific command with those arguments will be allowed.
+.RE
+.RS
+.BR \ \ \ \ -
+To allow all commands in the user's PATH, use the value 'all'.
+.RE
 if  sudo(8) is installed and sudo_noexec.so is available, it will be loaded
 before running every command, preventing it from  running  further  commands
 itself. If not available, beware of commands like vim/find/more/etc. that will
@@ -166,6 +178,10 @@ commands (e.g. find, vim, xargs).
 
 important: commands defined in 'allowed_shell_escape' override their definition
 in the \'allowed\' variable.
+.TP
+.I allowed_file_extension
+a list of allowed file extensions that can be provided in the command line.
+If a list of allowed extensions is provided, all other file extensions will be disallowed.
 .TP
 .I allowed_cmd_path
 a list of path; all executable files inside these path will be allowed
@@ -245,6 +261,53 @@ set prompt style for current directory - 0, 1 or 2. Default is 0.
 -> will show the complete path to the current directory
 .RE
 .TP
+.I LPS1
+LShell supports prompt customization using the \fB$LPS1\fR environment variable, similar to \fB$PS1\fR in bash. If \fB$LPS1\fR is defined, it takes precedence over \fIprompt\fR and allows for dynamic prompt customization using placeholders. Available placeholders need to be prepended with a backslash (\\) and include:
+.RS
+.B \ \ \ \ u
+-> username of the current user
+.RE
+.RS
+.BR \ \ \ \ h
+-> short hostname (up to first dot)
+.RE
+.RS
+.BR \ \ \ \ H
+-> full hostname
+.RE
+.RS
+.BR \ \ \ \ w
+-> current working directory, with home directory replaced by ~
+.RE
+.RS
+.BR \ \ \ \ W
+-> basename of the current directory
+.RE
+.RS
+.BR \ \ \ \ $
+-> prompt symbol (# for root, $ otherwise)
+.RE
+.RS
+.BR \ \ \ \ t
+-> current time in HH:MM:SS (24-hour format)
+.RE
+.RS
+.BR \ \ \ \ T
+-> current time in HH:MM:SS (12-hour format)
+.RE
+.RS
+.BR \ \ \ \ A
+-> current time in HH:MM (24-hour format, without seconds)
+.RE
+.RS
+.BR \ \ \ \ @
+-> current time in HH:MM AM/PM format
+.RE
+.RS
+.BR \ \ \ \ d
+-> current date in Weekday Month Day format (e.g., Mon Mar 01)
+.RE
+.LP
 .I overssh
 list of command allowed to execute over ssh (e.g. rsync, rdiff-backup, scp, \
 etc.)
@@ -346,6 +409,22 @@ lshell options are loaded from the configuration file
 .RS
 This will override the default options specified for configuration and/or log \
 file
+.RE
+.TP
+.B $ ./test_script.lsh
+.RS
+If you include lshell in a script with the \fBshebang (e.g. #!/usr/bin/lshell)\fR and use the \fB`.lsh` extension\fR:
+.sp
+.nf
+.ft 3
+#!/usr/bin/lshell
+echo "Hello World!"
+.fi
+.ft
+
+Ensure the script has a \fB.lsh\fR extension to indicate it is intended for lshell.
+
+This allows for limited shell commands to be executed within the script while maintaining restrictions.
 .RE
 
 .SH USE CASE

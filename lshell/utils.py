@@ -1,38 +1,24 @@
-#
-#    Limited command Shell (lshell)
-#
-#  Copyright (C) 2008-2024 Ignace Mouzannar <ghantoos@ghantoos.org>
-#
-#  This file is part of lshell
-#
-#  This program is free software: you can redistribute it and/or modify
-#  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
-#  (at your option) any later version.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
-#
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+""" Utils for lshell """
 
 import re
 import subprocess
 import os
 import sys
+import random
+import string
+import shlex
 from getpass import getuser
+from time import strftime, gmtime
 
 # import lshell specifics
 from lshell import variables
-from lshell import builtins
+from lshell import builtincmd
 
 
-def usage():
+def usage(exitcode=1):
     """Prints the usage"""
-    sys.stderr.write(variables.usage)
-    sys.exit(0)
+    sys.stderr.write(variables.USAGE)
+    sys.exit(exitcode)
 
 
 def version():
@@ -43,9 +29,6 @@ def version():
 
 def random_string(length):
     """generate a random string"""
-    import random
-    import string
-
     randstring = ""
     for char in range(length):
         char = random.choice(string.ascii_letters + string.digits)
@@ -70,7 +53,7 @@ def get_aliases(line, aliases):
             (before, after, rest) = re.findall(reg1, line)[0]
             linesave = line
 
-            line = re.sub(reg2, f"{before} {aliaskey}{after}", line, 1)
+            line = re.sub(reg2, f"{before} {aliaskey}{after}", line, count=1)
 
             # if line does not change after sub, exit loop
             if linesave == line:
@@ -85,23 +68,90 @@ def get_aliases(line, aliases):
     return line
 
 
+def split_commands(line):
+    """Split the command line into separate commands based on the operators"""
+    # in case ';', '|' or '&' are not forbidden, check if in line
+    lines = []
+
+    # Variable to track if we're inside quotes
+    in_quotes = False
+
+    # Starting position of the command segment
+    if line[0] in ["&", "|", ";"]:
+        start = 1
+    else:
+        start = 0
+
+    # Iterate over the command line
+    for i in range(1, len(line)):
+        # Check for quotes to ignore splitting inside quoted strings
+        if line[i] in ['"', "'"] and (i == 0 or line[i - 1] != "\\"):
+            in_quotes = not in_quotes
+            # Only split if we are not inside quotes and the current character
+            # is an unescaped operator
+        if line[i] in ["&", "|", ";"] and line[i - 1] != "\\" and not in_quotes:
+            if start != i:
+                lines.append(line[start:i])
+            start = i + 1
+
+    # Append the last segment of the command
+    if start != len(line):
+        lines.append(line[start:])
+
+    return lines
+
+
+def split_command_args(line):
+    """Split the command line into cmd and args"""
+    # Use shlex to split the command into parts
+    tokens = shlex.split(line)
+
+    if tokens:
+        # The first token is the command
+        cmd = tokens[0]
+        # The rest are the arguments
+        args = " ".join(tokens[1:])
+    else:
+        # If there are no tokens, return None for both
+        cmd, args = "", ""
+
+    return cmd, args
+
+
+def replace_exit_code(line, retcode):
+    """Replace the exit code in the command line. Replaces all occurrences of
+    $? with the exit code."""
+    if re.search(r"[;&\|]", line):
+        p = re.compile(r"(\s|^)(\$\?)([\s|$]?[;&|].*)")
+    else:
+        p = re.compile(r"(\s|^)(\$\?)(\s|$)")
+
+    line = p.sub(rf" {retcode} \3", line)
+
+    return line
+
+
 def cmd_parse_execute(command_line, shell_context=None):
     """Parse and execute a shell command line"""
     # Split command line by shell grammar: '&&', '||', and ';;'
-    cmd_split = re.split(r"(;;|&&|\|\|)", command_line)
+    cmd_split = re.split(r"(;|&&|\|\|)", command_line)
 
-    # Initialize a variable to track whether the previous command succeeded or failed
-    previous_retcode = 0
+    # Initialize return code
+    retcode = 0
 
     # Iterate over commands and operators
     for i in range(0, len(cmd_split), 2):
         command = cmd_split[i].strip()
         operator = cmd_split[i - 1].strip() if i > 0 else None
 
-        # Only execute commands based on the previous operator and return code
-        if operator == "&&" and previous_retcode != 0:
+        # Skip empty commands
+        if not command:
             continue
-        elif operator == "||" and previous_retcode == 0:
+
+        # Only execute commands based on the previous operator and return code
+        if operator == "&&" and retcode != 0:
+            continue
+        elif operator == "||" and retcode == 0:
             continue
 
         # Get the executable command
@@ -117,72 +167,108 @@ def cmd_parse_execute(command_line, shell_context=None):
             elif executable == "exit":
                 shell_context.do_exit(command)
             elif executable == "history":
-                builtins.history(shell_context.conf, shell_context.log)
+                builtincmd.history(shell_context.conf, shell_context.log)
             elif executable == "cd":
-                retcode = builtins.cd(argument, shell_context.conf)
+                retcode = builtincmd.cd(argument, shell_context.conf)
             else:
-                retcode = getattr(builtins, executable)(shell_context.conf)
+                retcode = getattr(builtincmd, executable)(shell_context.conf)
         else:
+            if "path_noexec" in shell_context.conf:
+                os.environ["LD_PRELOAD"] = shell_context.conf["path_noexec"]
+            command = replace_exit_code(command, retcode)
             retcode = exec_cmd(command)
-
-        # Update the previous return code
-        previous_retcode = retcode
 
     return retcode
 
 
 def exec_cmd(cmd):
-    """execute a command, locally catching the signals"""
+    """Execute a command exactly as entered, without shell interpretation."""
     try:
-        proc = subprocess.Popen([cmd], shell=True)
+        # Split the command to handle it as a list of arguments
+        cmd_args = shlex.split(cmd)
+        # Execute without shell=True to prevent shell interpretation
+        proc = subprocess.Popen(cmd_args)
         proc.communicate()
         retcode = proc.returncode
+    except FileNotFoundError:
+        # Handle the case where the command is not found
+        sys.stderr.write(
+            f"Command '{cmd_args[0]}' not found in $PATH or not installed on the system.\n"
+        )
+        retcode = 127
     except KeyboardInterrupt:
-        # force process to properly terminate (SIGTERM)
+        # Properly handle user interruption (SIGTERM)
         proc.terminate()
         proc.communicate()
-        # exit code for user terminated scripts is 130
         retcode = 130
 
     return retcode
 
 
+def parse_ps1(ps1):
+    """Parse and format $PS1-style prompt with lshell-compatible values"""
+    user = getuser()
+    host = os.uname()[1]
+    cwd = os.getcwd()
+    home = os.path.expanduser("~")
+    prompt_symbol = "#" if os.geteuid() == 0 else "$"
+
+    # Define LPS1 replacement mappings
+    replacements = {
+        r"\u": user,
+        r"\h": host.split(".")[0],
+        r"\H": host,
+        r"\w": cwd.replace(home, "~", 1) if cwd.startswith(home) else cwd,
+        r"\W": os.path.basename(cwd),
+        r"\$": prompt_symbol,
+        r"\\": "\\",
+        r"\t": strftime("%H:%M:%S", gmtime()),
+        r"\T": strftime("%I:%M:%S", gmtime()),
+        r"\A": strftime("%H:%M", gmtime()),
+        r"\@": strftime("%I:%M:%S%p", gmtime()),
+        r"\d": strftime("%a %b %d", gmtime()),
+    }
+    # Replace each placeholder with its corresponding value
+    for placeholder, value in replacements.items():
+        ps1 = ps1.replace(placeholder, value)
+
+    return ps1
+
+
 def getpromptbase(conf):
-    """get prompt used by the shell"""
-    if "prompt" in conf:
-        promptbase = conf["prompt"]
+    """Get the base prompt structure, using $PS1 or defaulting to config-based prompt"""
+    ps1_env = os.getenv("LPS1")
+    if ps1_env:
+        # Use $LPS1 with placeholders if defined
+        promptbase = parse_ps1(ps1_env)
+    else:
+        # Fallback to configured prompt if no $PS1 is defined
+        promptbase = conf.get("prompt", "%u")
         promptbase = promptbase.replace("%u", getuser())
         promptbase = promptbase.replace("%h", os.uname()[1].split(".")[0])
-    else:
-        promptbase = getuser()
 
     return promptbase
 
 
 def updateprompt(path, conf):
-    """Set actual prompt to print, updated when changing directories"""
-
-    # get initial promptbase (from configuration)
+    """Set the prompt with updated path and user privilege level, supporting $LPS1 format"""
     promptbase = getpromptbase(conf)
+    prompt_symbol = "# " if os.geteuid() == 0 else "$ "
 
-    # update the prompt when directory is changed
-    if path == conf['home_path']:
-        prompt = '%s:~$ ' % promptbase
-    elif conf['prompt_short'] == 1:
-        if path.split('/')[-2] == 'home':
-            prompt = '%s:~$ ' % promptbase
-        elif path.split('/')[-2] == 'clients':
-            prompt = '%s:[sites@%s]$ ' % (promptbase,
-                                          path.split('/')[-1])
-        else:
-            prompt = '%s:[%s]$ ' % (promptbase,
-                                    path.split('/')[-1])
-    elif conf['prompt_short'] == 2:
-        prompt = '%s: %s$ ' % (promptbase, os.getcwd())
-    elif re.findall(conf['home_path'], path):
-        prompt = '%s:~%s$ ' % (promptbase,
-                               path.split(conf['home_path'])[1])
+    # Determine dynamic path display if $LPS1 is not defined
+    if os.getenv("LPS1"):
+        prompt = promptbase
     else:
-        prompt = '%s:%s$ ' % (promptbase, path)
+        if path == conf["home_path"]:
+            current_path = "~"
+        elif conf.get("prompt_short") == 1:
+            current_path = os.path.basename(path)
+        elif conf.get("prompt_short") == 2:
+            current_path = path
+        elif path.startswith(conf["home_path"]):
+            current_path = f"~{path[len(conf['home_path']):]}"
+        else:
+            current_path = path
+        prompt = f"{promptbase}:{current_path}{prompt_symbol}"
 
     return prompt

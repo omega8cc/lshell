@@ -1,26 +1,13 @@
-#
-#  Limited command Shell (lshell)
-#
-#  Copyright (C) 2008-2024 Ignace Mouzannar <ghantoos@ghantoos.org>
-#
-#  This file is part of lshell
-#
-#  This program is free software: you can redistribute it and/or modify
-#  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
-#  (at your option) any later version.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
-#
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+""" This module is used to check the security of the commands entered by the
+user. It checks if the command is allowed, if the path is allowed, if the
+command contains forbidden characters, etc.
+"""
 
 import sys
 import re
 import os
+import shlex
+import glob
 
 # import lshell specifics
 from lshell import utils
@@ -30,27 +17,59 @@ def warn_count(messagetype, command, conf, strict=None, ssh=None):
     """Update the warning_counter, log and display a warning to the user"""
 
     log = conf["logpath"]
-    if not ssh:
-        if strict:
-            conf["warning_counter"] -= 1
-            if conf["warning_counter"] < 0:
-                log.critical(f'*** forbidden {messagetype} -> "{command}"')
-                log.critical("*** Kicked out")
-                sys.exit(1)
-            else:
-                log.critical(f'*** forbidden {messagetype} -> "{command}"')
-                sys.stderr.write(
-                    f"*** You have {conf['warning_counter']} warning(s) left,"
-                    " before getting kicked out.\n"
-                )
-                log.error(f"*** User warned, counter: {conf['warning_counter']}")
-                sys.stderr.write("This incident has been reported.\n")
-        else:
-            if not conf["quiet"]:
-                log.critical(f"*** forbidden {messagetype}: {command}")
 
-    # if you are here, means that you did something wrong. Return 1.
+    if ssh:
+        return 1, conf
+
+    if strict:
+        conf["warning_counter"] -= 1
+        if conf["warning_counter"] < 0:
+            log.critical(f'*** forbidden {messagetype} -> "{command}"')
+            log.critical("*** Kicked out")
+            sys.exit(1)
+        else:
+            log.critical(f'*** forbidden {messagetype} -> "{command}"')
+            sys.stderr.write(
+                f"*** You have {conf['warning_counter']} warning(s) left,"
+                " before getting kicked out.\n"
+            )
+            log.error(f"*** User warned, counter: {conf['warning_counter']}")
+            sys.stderr.write("This incident has been reported.\n")
+    elif not conf["quiet"]:
+        log.critical(f"*** forbidden {messagetype}: {command}")
+
+    # Return 1 to indicate a warning was triggered.
     return 1, conf
+
+
+def tokenize_command(command):
+    """Tokenize the command line into separate commands based on the operators"""
+
+    try:
+        lexer = shlex.shlex(command, posix=True)
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        # Handle the exception and return an appropriate message or handle as needed
+        return []
+    return tokens
+
+
+def expand_shell_wildcards(item):
+    """Expand shell wildcards in the item and return the expanded path"""
+
+    # Expand shell variables like $HOME
+    item = os.path.expanduser(item)
+    item = os.path.expandvars(item)
+    item = os.path.realpath(item)  # this is a hack - needs to be reviewed
+    # test if item is a directory
+    expanded_items = glob.glob(item, recursive=True)
+    if expanded_items:
+        # Return all matches instead of just the first one
+        item = expanded_items[0]
+
+    return item
 
 
 def check_path(line, conf, completion=None, ssh=None, strict=None):
@@ -61,50 +80,10 @@ def check_path(line, conf, completion=None, ssh=None, strict=None):
     allowed_path_re = str(conf["path"][0])
     denied_path_re = str(conf["path"][1][:-1])
 
-    # split line depending on the operators
-    sep = re.compile(r"\ |;|\||&")
-    line = line.strip()
-    line = sep.split(line)
+    line = tokenize_command(line)
 
     for item in line:
-        # remove potential quotes or back-ticks
-        item = re.sub(r'^["\'`]|["\'`]$', "", item)
-
-        # remove potential $(), ${}, ``
-        item = re.sub(r"^\$[\(\{]|[\)\}]$", "", item)
-
-        # if item has been converted to something other than a string
-        # or an int, reconvert it to a string
-        if type(item) not in ["str", "int"]:
-            item = str(item)
-        # replace "~" with home path
-        item = os.path.expanduser(item)
-
-        # expand shell wildcards using "echo"
-        # i know, this a bit nasty...
-        if re.findall(r"\$|\*|\?", item):
-            # remove quotes if available
-            item = re.sub("\"|'", "", item)
-            import subprocess
-
-            p = subprocess.Popen(
-                f"`which echo` {item}",
-                shell=True,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            cout = p.stdout
-
-            try:
-                item = cout.readlines()[0].decode("utf8").split(" ")[0]
-                item = item.strip()
-                item = os.path.expandvars(item)
-            except IndexError:
-                conf["logpath"].critical("*** Internal error: command not " "executed")
-                return 1, conf
-
-        tomatch = os.path.realpath(item)
+        tomatch = expand_shell_wildcards(item)
         if os.path.isdir(tomatch) and tomatch[-1] != "/":
             tomatch += "/"
         match_allowed = re.findall(allowed_path_re, tomatch)
@@ -172,11 +151,11 @@ def check_secure(line, conf, strict=None, ssh=None):
         # allow '&&' and '||' even if singles are forbidden
         if item in ["&", "|"]:
             if re.findall(rf"[^\{item}]\{item}[^\{item}]", line):
-                ret, conf = warn_count("syntax", oline, conf, strict=strict, ssh=ssh)
+                ret, conf = warn_count("character", item, conf, strict=strict, ssh=ssh)
                 return ret, conf
         else:
             if item in line:
-                ret, conf = warn_count("syntax", oline, conf, strict=strict, ssh=ssh)
+                ret, conf = warn_count("character", item, conf, strict=strict, ssh=ssh)
                 return ret, conf
 
     # check if the line contains $(foo) executions, and check them
@@ -214,63 +193,95 @@ def check_secure(line, conf, strict=None, ssh=None):
     elif line.startswith("$(") or line.startswith("`"):
         return 0, conf
 
-    # in case ';', '|' or '&' are not forbidden, check if in line
-    lines = []
-
-    # corrected by Alojzij Blatnik #48
-    # test first character
-    if line[0] in ["&", "|", ";"]:
-        start = 1
-    else:
-        start = 0
-
-    # split remaining command line
-    for i in range(1, len(line)):
-        # in case \& or \| or \; don't split it
-        if line[i] in ["&", "|", ";"] and line[i - 1] != "\\":
-            # if there is more && or || skip it
-            if start != i:
-                lines.append(line[start:i])
-            start = i + 1
-
-    # append remaining command line
-    if start != len(line):
-        # fmt: off
-        lines.append(line[start:len(line)])
-        # fmt: on
+    lines = utils.split_commands(line)
 
     for separate_line in lines:
         # remove trailing parenthesis
         separate_line = re.sub(r"\)$", "", separate_line)
         separate_line = " ".join(separate_line.split())
         splitcmd = separate_line.strip().split(" ")
+
+        # Extract the command and its arguments
         command = splitcmd[0]
-        if len(splitcmd) > 1:
-            cmdargs = splitcmd
-        else:
-            cmdargs = None
+        command_args_list = splitcmd[1:]
+        command_args_string = " ".join(command_args_list)
+        full_command = f"{command} {command_args_string}".strip()
 
         # in case of a sudo command, check in sudo_commands list if allowed
-        if command == "sudo":
-            if type(cmdargs) is list:
-                # allow the -u (user) flag
-                if cmdargs[1] == "-u" and cmdargs:
-                    sudocmd = cmdargs[3]
-                else:
-                    sudocmd = cmdargs[1]
-                if sudocmd not in conf["sudo_commands"] and cmdargs:
-                    ret, conf = warn_count(
-                        "sudo command", oline, conf, strict=strict, ssh=ssh
-                    )
-                    return ret, conf
+        if command == "sudo" and command_args_list:
+            # allow the -u (user) flag
+            if command_args_list[0] == "-u" and command_args_list:
+                sudocmd = command_args_list[2]
+            else:
+                sudocmd = command_args_list[0]
+            if sudocmd not in conf["sudo_commands"] and command_args_list:
+                ret, conf = warn_count(
+                    "sudo command", oline, conf, strict=strict, ssh=ssh
+                )
+                return ret, conf
 
         # if over SSH, replaced allowed list with the one of overssh
         if ssh:
             conf["allowed"] = conf["overssh"]
 
-        # for all other commands check in allowed list
-        if command not in conf["allowed"] and command:
+        # # for all other commands check in allowed list
+        # if command not in conf["allowed"] and command:
+        #     ret, conf = warn_count("command", command, conf, strict=strict, ssh=ssh)
+        #     return ret, conf
+
+        # Check if the full command (with arguments) or just the command is allowed
+        if (
+            full_command not in conf["allowed"]
+            and command not in conf["allowed"]
+            and command
+        ):
             ret, conf = warn_count("command", command, conf, strict=strict, ssh=ssh)
             return ret, conf
 
+        # Check if the command contains any forbidden extensions
+        if conf.get("allowed_file_extensions"):
+            allowed_extensions = conf["allowed_file_extensions"]
+            check_extensions, disallowed_extensions = check_allowed_file_extensions(
+                full_command, allowed_extensions
+            )
+            if check_extensions is False:
+                ret, conf = warn_count(
+                    f"file extension {disallowed_extensions}",
+                    full_command,
+                    conf,
+                    strict=strict,
+                    ssh=ssh,
+                )
+                return ret, conf
+
     return 0, conf
+
+
+def check_allowed_file_extensions(command_line, allowed_extensions):
+    """Checks if any file extensions in the command line are allowed."""
+    # Split the command using shlex to handle quotes and escape characters
+    try:
+        tokens = shlex.split(command_line)
+    except ValueError as e:
+        # Log error or provide user feedback on the invalid input
+        print(f"Error parsing command line: {e}")
+        return True, []
+
+    # Extract file extensions from tokens
+    extensions_in_command = []
+    for token in tokens:
+        match = re.search(r"\.\w+", token)
+        if match:
+            extensions_in_command.append(match.group())
+
+    # Check each extension against the allowed_extensions list
+    disallowed_extensions = [
+        ext for ext in extensions_in_command if ext not in allowed_extensions
+    ]
+
+    # if len(disallowed_extensions) == 1:
+    #     disallowed_extensions = disallowed_extensions[0]
+
+    if disallowed_extensions:
+        return False, disallowed_extensions
+    return True, None

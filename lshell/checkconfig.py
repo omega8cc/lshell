@@ -1,22 +1,4 @@
-#
-#  Limited command Shell (lshell)
-#
-#  Copyright (C) 2008-2024 Ignace Mouzannar <ghantoos@ghantoos.org>
-#
-#  This file is part of lshell
-#
-#  This program is free software: you can redistribute it and/or modify
-#  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
-#  (at your option) any later version.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
-#
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+""" This module contains the checkconfig class of lshell """
 
 import sys
 import os
@@ -29,12 +11,12 @@ import logging
 import grp
 import time
 import glob
+from logging.handlers import SysLogHandler
 
 # import lshell specifics
 from lshell import utils
 from lshell import variables
-from lshell import sec
-from lshell import builtins
+from lshell.builtincmd import source
 
 
 class CheckConfig:
@@ -42,15 +24,15 @@ class CheckConfig:
 
     def __init__(self, args, refresh=None, stdin=None, stdout=None, stderr=None):
         """Force the calling of the methods below"""
-        if stdin == None:
+        if stdin is None:
             self.stdin = sys.stdin
         else:
             self.stdin = stdin
-        if stdout == None:
+        if stdout is None:
             self.stdout = sys.stdout
         else:
             self.stdout = stdout
-        if stderr == None:
+        if stderr is None:
             self.stderr = sys.stderr
         else:
             self.stderr = stderr
@@ -59,16 +41,34 @@ class CheckConfig:
         self.conf = {}
         self.conf, self.arguments = self.getoptions(args, self.conf)
         configfile = self.conf["configfile"]
+        self.check_config_file_exists(configfile)
         self.conf["config_mtime"] = self.get_config_mtime(configfile)
-        self.check_file(configfile)
+        self.check_config_file(configfile)
         self.get_global()
         self.check_log()
+        self.check_script()
         self.get_config()
         self.check_user_integrity()
         self.get_config_user()
         self.check_env()
-        self.check_scp_sftp()
         self.set_noexec()
+
+    def check_config_file_exists(self, configfile):
+        """Check if the configuration file exists, else exit with error"""
+        if not os.path.exists(configfile):
+            self.stderr.write("Error: Config file doesn't exist\n")
+            utils.usage()
+
+    def check_script(self):
+        """Check if lshell is invoked with the correct binary and script extension"""
+        if sys.argv[0].endswith("bin/lshell") and sys.argv[-1].endswith(".lsh"):
+            script_path = os.path.realpath(sys.argv[-1])
+            self.log.debug(f"Detected script mode: {script_path}")
+            if not os.path.isfile(script_path):
+                self.log.error(f"Script file not found: {script_path}")
+                sys.exit(1)
+            else:
+                self.conf["script"] = script_path
 
     def getoptions(self, arguments, conf):
         """This method checks the usage. lshell.py must be called with a
@@ -93,9 +93,9 @@ class CheckConfig:
             if f"{option[2:]}=" in variables.configparams:
                 conf[option[2:]] = value
             if option in ["-c"]:
-                conf["ssh"] = value
+                conf["ssh"] = value.strip()
             if option in ["-h", "--help"]:
-                utils.usage()
+                utils.usage(exitcode=0)
             if option in ["--version"]:
                 utils.version()
 
@@ -123,25 +123,15 @@ class CheckConfig:
         # Check paths to files that contain env vars
         if "env_vars_files" in self.conf:
             for envfile in self.conf["env_vars_files"]:
-                file_path = os.path.expandvars(envfile)
-                try:
-                    with open(file_path) as env_vars:
-                        for env_var in env_vars.readlines():
-                            if env_var.split(" ", 1)[0] == "export":
-                                builtins.export(env_var.strip())
-                except (OSError, IOError):
-                    self.stderr.write(
-                        f"ERROR: Unable to read environment file: {file_path}\n"
-                    )
+                source(envfile)
 
-    def check_file(self, file):
+    def check_config_file(self, file):
         """This method checks the existence of the given configuration
         file passed via command line arguments
         """
         if not os.path.exists(file):
             self.stderr.write("Error: Config file doesn't exist\n")
-            self.stderr.write(variables.usage)
-            sys.exit(1)
+            utils.usage()
         else:
             self.config = configparser.ConfigParser()
 
@@ -175,11 +165,12 @@ class CheckConfig:
         }
 
         # create logger for lshell application
-        if "syslogname" in self.conf:
+        if self.conf.get("syslogname"):
             try:
-                logname = eval(self.conf["syslogname"])
+                logname = str(self.conf["syslogname"])
             except (SyntaxError, NameError, TypeError):
-                logname = self.conf["syslogname"]
+                sys.stderr.write("ERR: syslogname must be a string\n")
+                sys.exit(1)
         else:
             logname = "lshell"
 
@@ -189,15 +180,15 @@ class CheckConfig:
         # this is useful if configuration is reloaded
         for loghandler in logger.handlers:
             try:
-                logging.shutdown(logger.handlers)
+                logging.shutdown(loghandler)
             except TypeError:
                 pass
         for logfilter in logger.filters:
             logger.removeFilter(logfilter)
 
-        formatter = logging.Formatter("%%(asctime)s (%s): %%(message)s" % getuser())
+        formatter = logging.Formatter(f"%(asctime)s ({getuser()}): %(message)s")
         syslogformatter = logging.Formatter(
-            "%s[%s]: %s: %%(message)s" % (logname, os.getpid(), getuser())
+            f"{logname}[{os.getpid()}]: {getuser()}: %(message)s"
         )
 
         logger.setLevel(logging.DEBUG)
@@ -221,17 +212,18 @@ class CheckConfig:
             self.conf["loglevel"] = 0
 
         # read logfilename is exists, and set logfilename
-        if "logfilename" in self.conf:
+        if self.conf.get("logfilename"):
             try:
-                logfilename = eval(self.conf["logfilename"])
+                logfilename = str(self.conf["logfilename"])
             except (SyntaxError, NameError, TypeError):
-                logfilename = self.conf["logfilename"]
+                sys.stderr.write("ERR: logfilename must be a string\n")
+                sys.exit(1)
             currentime = time.localtime()
-            logfilename = logfilename.replace("%y", "%s" % currentime[0])
-            logfilename = logfilename.replace("%m", "%02d" % currentime[1])
-            logfilename = logfilename.replace("%d", "%02d" % currentime[2])
+            logfilename = logfilename.replace("%y", f"{currentime[0]}")
+            logfilename = logfilename.replace("%m", f"{currentime[1]:02d}")
+            logfilename = logfilename.replace("%d", f"{currentime[2]:02d}")
             logfilename = logfilename.replace(
-                "%h", "%02d%02d" % (currentime[3], currentime[4])
+                "%h", f"{currentime[3]:02d}{currentime[4]:02d}"
             )
             logfilename = logfilename.replace("%u", getuser())
         else:
@@ -240,8 +232,6 @@ class CheckConfig:
         if self.conf["loglevel"] > 0:
             try:
                 if logfilename == "syslog":
-                    from logging.handlers import SysLogHandler
-
                     syslog = SysLogHandler(address="/dev/log")
                     syslog.setFormatter(syslogformatter)
                     syslog.setLevel(self.levels[self.conf["loglevel"]])
@@ -250,8 +240,8 @@ class CheckConfig:
                     # if log file is writable add new log file handler
                     logfile = os.path.join(self.conf["logpath"], logfilename + ".log")
                     # create log file if it does not exist, and set permissions
-                    fp = open(logfile, "a")
-                    fp.close()
+                    with open(logfile, "a", encoding="utf-8"):
+                        pass
                     try:
                         os.chmod(logfile, 0o600)
                     except OSError:
@@ -279,8 +269,6 @@ class CheckConfig:
 
         # list the include_dir directory and read configuration files
         if "include_dir" in self.conf:
-            import glob
-
             self.conf["include_dir_conf"] = glob.glob(f"{self.conf['include_dir']}*")
             self.config.read(self.conf["include_dir_conf"])
 
@@ -332,6 +320,7 @@ class CheckConfig:
                     "overssh",
                     "allowed",
                     "allowed_shell_escape",
+                    "allowed_file_extensions",
                     "forbidden",
                 ]:
                     for stuff in split:
@@ -349,7 +338,7 @@ class CheckConfig:
                             # remove double slashes
                             liste[0] = liste[0].replace("//", "/")
                             self.conf_raw.update({key: str(liste)})
-                        elif stuff and type(eval(stuff)) == list:
+                        elif stuff and isinstance(eval(stuff), list):
                             self.conf_raw.update({key: stuff})
                 # case allowed is set to 'all'
                 elif key == "allowed" and split[0] == "'all'":
@@ -368,7 +357,7 @@ class CheckConfig:
     def minusplus(self, confdict, key, extra):
         """update configuration lists containing -/+ operators"""
         if key in confdict:
-            liste = self.myeval(confdict[key])
+            liste = self.myeval(confdict[key], key)
         elif key == "path":
             liste = ["", ""]
         else:
@@ -431,13 +420,23 @@ class CheckConfig:
 
         return str(expanded_all)
 
-    def myeval(self, value, info=""):
+    def myeval(self, value, key=""):
         """if eval returns SyntaxError, log it as critical conf missing"""
         try:
             evaluated = eval(value)
+            # if list, remove duplicates
+            if isinstance(evaluated, list) and key in [
+                "allowed",
+                "allowed_shell_escape",
+                "allowed_file_extensions",
+                "forbidden",
+                "overssh",
+                "sudo_commands",
+            ]:
+                evaluated = list(set(evaluated))
             return evaluated
         except SyntaxError:
-            self.log.critical(f"CONF: Incomplete {info} field in configuration file")
+            self.log.critical(f"CONF: Incomplete {key} field in configuration file")
             sys.exit(1)
 
     def check_user_integrity(self):
@@ -446,7 +445,7 @@ class CheckConfig:
         In case fields are missing, the user is notified and exited from lshell
         """
         for item in variables.required_config:
-            if item not in self.conf_raw.keys():
+            if item not in self.conf_raw:
                 self.log.critical(f"ERROR: Missing parameter '{item}'")
                 self.log.critical(
                     f"ERROR: Add it in the in the [{self.user}] or [default] section of conf file."
@@ -478,6 +477,7 @@ class CheckConfig:
         for item in [
             "allowed",
             "allowed_shell_escape",
+            "allowed_file_extensions",
             "forbidden",
             "sudo_commands",
             "warning_counter",
@@ -509,6 +509,7 @@ class CheckConfig:
                 if item in [
                     "allowed",
                     "allowed_shell_escape",
+                    "allowed_file_extensions",
                     "overssh",
                     "sudo_commands",
                     "env_vars_files",
@@ -574,11 +575,11 @@ class CheckConfig:
         if "intro" in self.conf_raw:
             self.conf["intro"] = self.myeval(self.conf_raw["intro"])
         else:
-            self.conf["intro"] = variables.intro
+            self.conf["intro"] = variables.INTRO
 
         if os.path.isdir(self.conf["home_path"]):
             # change dir to home when initially loading the configuration
-            if self.refresh == None:
+            if self.refresh is None:
                 os.chdir(self.conf["home_path"])
             # if reloading the configuration, do not change directory
             else:
@@ -597,14 +598,24 @@ class CheckConfig:
             except (KeyError, SyntaxError, TypeError, NameError):
                 self.log.error(f"CONF: history file error: {self.conf['history_file']}")
         else:
-            self.conf["history_file"] = variables.history_file
+            self.conf["history_file"] = variables.HISTORY_FILE
 
         if not self.conf["history_file"].startswith("/"):
             self.conf["history_file"] = (
                 f"{self.conf['home_path']}/{self.conf['history_file']}"
             )
 
-        os.environ["PATH"] = os.environ["PATH"] + self.conf["env_path"]
+        if self.conf["env_path"]:
+            new_path = f"{self.conf['env_path']}:{os.environ['PATH']}"
+
+            # Check if the new path is valid
+            if all(
+                c in string.ascii_letters + string.digits + "/:-_." for c in new_path
+            ) and not new_path.startswith(":"):
+                os.environ["PATH"] = new_path
+            else:
+                print(f"CONF: env_path must be a valid $PATH: {self.conf['env_path']}")
+                sys.exit(1)
 
         # append default commands to allowed list
         self.conf["allowed"] += list(set(variables.builtins_list) - set(["export"]))
@@ -649,117 +660,6 @@ class CheckConfig:
 
             self.log.error("WinSCP session started")
 
-    def check_scp_sftp(self):
-        """This method checks if the user is trying to SCP a file onto the
-        server. If this is the case, it checks if the user is allowed to use
-        SCP or not, and    acts as requested. : )
-        """
-        if "ssh" in self.conf:
-            if "SSH_CLIENT" in os.environ and "SSH_TTY" not in os.environ:
-
-                # check if sftp is requested and allowed
-                if "sftp-server" in self.conf["ssh"]:
-                    if self.conf["sftp"] == 1:
-                        self.log.error("SFTP connect")
-                        retcode = utils.cmd_parse_execute(self.conf["ssh"])
-                        self.log.error("SFTP disconnect")
-                        sys.exit(retcode)
-                    else:
-                        self.log.error("*** forbidden SFTP connection")
-                        sys.exit(1)
-
-                # initialize cli session
-                from lshell.shellcmd import ShellCmd
-
-                cli = ShellCmd(self.conf, None, None, None, None, self.conf["ssh"])
-                ret_check_path, self.conf = sec.check_path(
-                    self.conf["ssh"], self.conf, ssh=1
-                )
-                if ret_check_path == 1:
-                    self.ssh_warn("path over SSH", self.conf["ssh"])
-
-                # check if scp is requested and allowed
-                if self.conf["ssh"].startswith("scp "):
-                    if self.conf["scp"] == 1 or "scp" in self.conf["overssh"]:
-                        if " -f " in self.conf["ssh"]:
-                            # case scp download is allowed
-                            if self.conf["scp_download"]:
-                                self.log.error(f'SCP: GET "{self.conf["ssh"]}"')
-                            # case scp download is forbidden
-                            else:
-                                self.log.error(
-                                    f'SCP: download forbidden: "{self.conf["ssh"]}"'
-                                )
-                                sys.exit(1)
-                        elif " -t " in self.conf["ssh"]:
-                            # case scp upload is allowed
-                            if self.conf["scp_upload"]:
-                                if "scpforce" in self.conf:
-                                    cmdsplit = self.conf["ssh"].split(" ")
-                                    scppath = os.path.realpath(cmdsplit[-1])
-                                    forcedpath = os.path.realpath(self.conf["scpforce"])
-                                    if scppath != forcedpath:
-                                        self.log.error(
-                                            f"SCP: forced SCP directory: {scppath}"
-                                        )
-                                        cmdsplit.pop(-1)
-                                        cmdsplit.append(forcedpath)
-                                        self.conf["ssh"] = string.join(cmdsplit)
-                                self.log.error(f'SCP: PUT "{self.conf["ssh"]}"')
-                            # case scp upload is forbidden
-                            else:
-                                self.log.error(
-                                    f'SCP: upload forbidden: "{self.conf["ssh"]}"'
-                                )
-                                sys.exit(1)
-                        retcode = utils.cmd_parse_execute(self.conf["ssh"], cli)
-                        self.log.error("SCP disconnect")
-                        sys.exit(retcode)
-                    else:
-                        self.ssh_warn("SCP connection", self.conf["ssh"], "scp")
-
-                # check if command is in allowed overssh commands
-                elif self.conf["ssh"]:
-                    # replace aliases
-                    self.conf["ssh"] = utils.get_aliases(
-                        self.conf["ssh"], self.conf["aliases"]
-                    )
-                    # if command is not "secure", exit
-                    ret_check_secure, self.conf = sec.check_secure(
-                        self.conf["ssh"], self.conf, strict=1, ssh=1
-                    )
-                    if ret_check_secure:
-                        self.ssh_warn("char/command over SSH", self.conf["ssh"])
-                    # else
-                    self.log.error(f'Over SSH: "{self.conf["ssh"]}"')
-                    # if command is "help"
-                    if self.conf["ssh"] == "help":
-                        cli.do_help(None)
-                        retcode = 0
-                    else:
-                        retcode = utils.cmd_parse_execute(self.conf["ssh"], cli)
-                    self.log.error("Exited")
-                    sys.exit(retcode)
-
-                # else warn and log
-                else:
-                    self.ssh_warn("command over SSH", self.conf["ssh"])
-
-            else:
-                # case of shell escapes
-                self.ssh_warn("shell escape", self.conf["ssh"])
-
-    def ssh_warn(self, message, command="", key=""):
-        """log and warn if forbidden action over SSH"""
-        if key == "scp":
-            self.log.critical(f"*** forbidden {message}")
-            self.log.error(f"*** SCP command: {command}")
-        else:
-            self.log.critical(f'*** forbidden {message}: "{command}"')
-        self.stderr.write("This incident has been reported.\n")
-        self.log.error("Exited")
-        sys.exit(1)
-
     def set_noexec(self):
         """This method checks the existence of the sudo_noexec library."""
         # list of standard sudo_noexec.so file location
@@ -783,9 +683,7 @@ class CheckConfig:
             self.conf["path_noexec"] = self.myeval(self.conf_raw["path_noexec"])
             # if path_noexec is empty, disable LD_PRELOAD
             # /!\ this feature should be used at the administrator's own risks!
-
             if self.conf["path_noexec"] == "":
-
                 return
             if not os.path.exists(self.conf["path_noexec"]):
                 self.log.critical(
@@ -800,26 +698,7 @@ class CheckConfig:
                     break
 
         # in case the library was found, set the LD_PRELOAD aliases
-        if "path_noexec" in self.conf:
-            # exclude allowed_shell_escape commands from loop
-            exclude_se = list(
-                set(self.conf["allowed"])
-                - set(self.conf["allowed_shell_escape"])
-                - set(variables.builtins_list)
-            )
-
-            for cmd in exclude_se:
-                # take already set aliases into consideration
-                if cmd in self.conf["aliases"]:
-                    cmd = self.conf["aliases"][cmd]
-
-                # add an alias to all the commands, prepending with LD_PRELOAD=
-                # except for built-in commands
-                if cmd not in variables.builtins_list:
-                    self.conf["aliases"][
-                        cmd
-                    ] = f"LD_PRELOAD={self.conf['path_noexec']} {cmd}"
-        else:
+        if not self.conf.get("path_noexec"):
             # if sudo_noexec.so file is not found,  write error in log file,
             # but don't exit tp  prevent strict dependency on sudo noexec lib
             self.log.error("Error: noexec library not found")

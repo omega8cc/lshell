@@ -1,27 +1,9 @@
-#
-#  Limited command Shell (lshell)
-#
-#  Copyright (C) 2008-2024 Ignace Mouzannar <ghantoos@ghantoos.org>
-#
-#  This file is part of lshell
-#
-#  This program is free software: you can redistribute it and/or modify
-#  it under the terms of the GNU General Public License as published by
-#  the Free Software Foundation, either version 3 of the License, or
-#  (at your option) any later version.
-#
-#  This program is distributed in the hope that it will be useful,
-#  but WITHOUT ANY WARRANTY; without even the implied warranty of
-#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-#  GNU General Public License for more details.
-#
-#  You should have received a copy of the GNU General Public License
-#  along with this program.  If not, see <http://www.gnu.org/licenses/>.
+""" Setup script for lshell """
 
-from setuptools import setup, find_packages
 import os
-from setuptools.command.install import install
 import shutil
+from setuptools import setup, find_packages
+from setuptools.command.install import install
 
 # import lshell specifics
 from lshell.variables import __version__
@@ -52,13 +34,14 @@ class CustomInstallCommand(install):
 
 if __name__ == "__main__":
 
+    with open("README.md", "r") as f:
+        long_description = f.read()
+
     setup(
-        name="lshell",
+        name="limited-shell",
         version=__version__,
-        description="Limited Shell",
-        long_description="""Limited Shell (lshell) lets you restrict the \
-environment of any user. It provides an easily configurable shell: just \
-choose a list of allowed commands for every limited account.""",
+        description="lshell - Limited Shell",
+        long_description=long_description,
         long_description_content_type="text/markdown",
         author="Ignace Mouzannar",
         author_email="ghantoos@ghantoos.org",
@@ -66,26 +49,37 @@ choose a list of allowed commands for every limited account.""",
         maintainer_email="ghantoos@ghantoos.org",
         keywords=["limited", "shell", "security", "python"],
         url="https://github.com/ghantoos/lshell",
-        license="GPL",
+        project_urls={
+            "GitHub": "https://github.com/ghantoos/lshell",
+            "Changelog": "https://github.com/ghantoos/lshell/blob/master/CHANGELOG.md",
+        },
+        license="GPL-3",
         platforms=["UNIX"],
         scripts=["bin/lshell"],
         package_dir={"lshell": "lshell"},
-        packages=find_packages(),
+        packages=find_packages(exclude=["test", "test.*"]),
         include_package_data=True,
         data_files=[
-            ("share/doc/lshell", ["README.md", "COPYING", "CHANGES", "SECURITY.md"]),
+            ("etc", ["etc/lshell.conf"]),
+            ("etc/logrotate.d", ["etc/logrotate.d/lshell"]),
+            (
+                "share/doc/lshell",
+                ["README.md", "COPYING", "CHANGELOG.md", "SECURITY.md"],
+            ),
             ("share/man/man1/", ["man/lshell.1"]),
         ],
         classifiers=[
             "Development Status :: 5 - Production/Stable",
             "Environment :: Console",
-            "Intended Audience :: Advanced End Users",
+            "Intended Audience :: Information Technology",
             "Intended Audience :: System Administrators",
-            "License :: OSI Approved :: GNU General Public License v3",
+            "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
             "Operating System :: POSIX",
             "Programming Language :: Python :: 3",
             "Topic :: Security",
             "Topic :: System :: Shells",
+            "Topic :: System :: System Shells",
+            "Topic :: System :: Systems Administration",
             "Topic :: Terminals",
         ],
         python_requires=">=3.6",

@@ -2,7 +2,8 @@
 *.swp
 .coverage
 .tox/
-lshell.egg-info/
+*.egg-info/
 etc/test.conf
 build/
 dist/
+test.lsh
