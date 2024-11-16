@@ -263,6 +263,14 @@ def updateprompt(path, conf):
             current_path = "~"
         elif conf.get("prompt_short") == 1:
             current_path = os.path.basename(path)
+            if path.split('/')[-2] == 'home':
+              prompt = '%s:~$ ' % promptbase
+            elif path.split('/')[-2] == 'clients':
+              prompt = '%s:[sites@%s]$ ' % (promptbase,
+                                            path.split('/')[-1])
+            else:
+              prompt = '%s:[%s]$ ' % (promptbase,
+                                      path.split('/')[-1])
         elif conf.get("prompt_short") == 2:
             current_path = path
         elif path.startswith(conf["home_path"]):
