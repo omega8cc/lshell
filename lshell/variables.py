@@ -3,7 +3,7 @@
 import sys
 import os
 
-__version__ = "0.10.7"
+__version__ = "0.10.9"
 
 # Required config variable list per user
 required_config = ["allowed", "forbidden", "warning_counter"]
@@ -82,7 +82,19 @@ configparams = [
     "include_dir=",
 ]
 
-builtins_list = ["cd", "clear", "exit", "export", "history", "lpath", "lsudo", "help"]
+builtins_list = [
+    "cd",
+    "clear",
+    "exit",
+    "export",
+    "history",
+    "lpath",
+    "lsudo",
+    "help",
+    "fg",
+    "bg",
+    "jobs",
+]
 
 FORBIDDEN_ENVIRON = (
     "LD_AOUT_LIBRARY_PATH",

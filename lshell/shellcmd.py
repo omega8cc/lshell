@@ -47,6 +47,7 @@ class ShellCmd(cmd.Cmd, object):
         self.args = args
         self.conf = userconf
         self.log = self.conf["logpath"]
+        self.kill_jobs_at_exit = False
 
         # Set timer
         if self.conf["timer"] > 0:
@@ -147,41 +148,49 @@ class ShellCmd(cmd.Cmd, object):
                     directory = directory.split("cd", 1)[1].strip()
                     # change directory then, if success, execute the rest of
                     # the cmd line
-                    self.retcode, self.conf = builtincmd.cd(directory, self.conf)
+                    self.retcode, self.conf = builtincmd.cmd_cd(directory, self.conf)
 
                     if self.retcode == 0:
                         cmd_split = re.split(r";|&&|&|\|\||\|", command)
                         for command in cmd_split:
-                            self.retcode = utils.cmd_parse_execute(command, self)
+                            self.retcode = utils.cmd_parse_execute(
+                                command, shell_context=self
+                            )
                 else:
                     # set directory to command line argument and change dir
                     directory = self.g_arg
-                    self.retcode, self.conf = builtincmd.cd(directory, self.conf)
+                    self.retcode, self.conf = builtincmd.cmd_cd(directory, self.conf)
 
             # built-in lpath function: list all allowed path
             elif self.g_cmd == "lpath":
-                self.retcode = builtincmd.lpath(self.conf)
+                self.retcode = builtincmd.cmd_lpath(self.conf)
             # built-in lsudo function: list all allowed sudo commands
             elif self.g_cmd == "lsudo":
-                self.retcode = builtincmd.lsudo(self.conf)
+                self.retcode = builtincmd.cmd_lsudo(self.conf)
             # built-in history function: print command history
             elif self.g_cmd == "history":
-                self.retcode = builtincmd.history(self.conf, self.log)
+                self.retcode = builtincmd.cmd_history(self.conf, self.log)
             # built-in export function
             elif self.g_cmd == "export":
-                self.retcode, var = builtincmd.export(self.g_line)
+                self.retcode, var = builtincmd.cmd_export(self.g_line)
                 if self.retcode == 1:
                     self.log.critical(f"** forbidden environment variable '{var}'")
             elif self.g_cmd == "source":
-                self.retcode = builtincmd.source(self.g_arg)
+                self.retcode = builtincmd.cmd_source(self.g_arg)
+            elif self.g_cmd == "fg":
+                self.retcode = builtincmd.cmd_bg_fg(self.g_cmd, self.g_arg)
+            elif self.g_cmd == "bg":
+                self.retcode = builtincmd.cmd_bg_fg(self.g_cmd, self.g_arg)
+            elif self.g_cmd == "jobs":
+                self.retcode = builtincmd.cmd_jobs()
             # case 'cd' is in an alias e.g. {'toto':'cd /var/tmp'}
             elif self.g_line[0:2] == "cd":
                 self.g_cmd = self.g_line.split()[0]
                 directory = " ".join(self.g_line.split()[1:])
-                self.retcode, self.conf = builtincmd.cd(directory, self.conf)
+                self.retcode, self.conf = builtincmd.cmd_cd(directory, self.conf)
 
             else:
-                self.retcode = utils.cmd_parse_execute(self.g_line, self)
+                self.retcode = utils.cmd_parse_execute(self.g_line, shell_context=self)
 
         elif self.g_cmd not in ["", "?", "help", None]:
             self.log.warn(f'INFO: unknown syntax -> "{self.g_line}"')
@@ -203,7 +212,9 @@ class ShellCmd(cmd.Cmd, object):
                 if "sftp-server" in self.conf["ssh"]:
                     if self.conf["sftp"] == 1:
                         self.log.error("SFTP connect")
-                        retcode = utils.cmd_parse_execute(self.conf["ssh"])
+                        retcode = utils.cmd_parse_execute(
+                            self.conf["ssh"], shell_context=self
+                        )
                         self.log.error("SFTP disconnect")
                         sys.exit(retcode)
                     else:
@@ -250,7 +261,9 @@ class ShellCmd(cmd.Cmd, object):
                                     f'SCP: upload forbidden: "{self.conf["ssh"]}"'
                                 )
                                 sys.exit(1)
-                        retcode = utils.cmd_parse_execute(self.conf["ssh"], self)
+                        retcode = utils.cmd_parse_execute(
+                            self.conf["ssh"], shell_context=self
+                        )
                         self.log.error("SCP disconnect")
                         sys.exit(retcode)
                     else:
@@ -276,7 +289,9 @@ class ShellCmd(cmd.Cmd, object):
                         self.do_help(None)
                         retcode = 0
                     else:
-                        retcode = utils.cmd_parse_execute(self.conf["ssh"], self)
+                        retcode = utils.cmd_parse_execute(
+                            self.conf["ssh"], shell_context=self
+                        )
                     self.log.error("Exited")
                     sys.exit(retcode)
 
@@ -344,7 +359,7 @@ class ShellCmd(cmd.Cmd, object):
             if self.intro and isinstance(self.intro, str):
                 self.stdout.write(f"{self.intro}\n")
             if self.conf["login_script"]:
-                utils.cmd_parse_execute(self.conf["login_script"], self)
+                utils.cmd_parse_execute(self.conf["login_script"], shell_context=self)
             self.prompt2 = "> "  # PS2 prompt
             # for long commands, a user may escape the new line
             # by giving a bash like '\' character at the end of
@@ -353,6 +368,8 @@ class ShellCmd(cmd.Cmd, object):
             partial_line = ""
             stop = None
             while not stop:
+                # Check background jobs after each command
+                builtincmd.check_background_jobs()
                 if self.cmdqueue:
                     line = self.cmdqueue.pop(0)
                 else:
@@ -571,9 +588,34 @@ class ShellCmd(cmd.Cmd, object):
 
     def do_exit(self, arg=None):
         """This method overrides the original do_exit method."""
-        self.log.error("Exited")
+        # Check for background jobs
+        if hasattr(builtincmd, "BACKGROUND_JOBS") and builtincmd.BACKGROUND_JOBS:
+            # Filter out completed jobs
+            active_jobs = []
+            for job_id, job in enumerate(builtincmd.BACKGROUND_JOBS, start=1):
+                if job.poll() is None:
+                    active_jobs.append((job_id, job))
+
+            if active_jobs and self.kill_jobs_at_exit:
+                for job_id, job in active_jobs:
+                    try:
+                        os.killpg(os.getpgid(job.pid), signal.SIGKILL)
+                        builtincmd.BACKGROUND_JOBS.pop(job_id - 1)
+                    except Exception as exception:
+                        print(f"Failed to stop job [{job.pid}]: {exception}")
+            else:
+                # Warn the user and list the stopped jobs
+                print(
+                    "There are stopped jobs. Use 'jobs' to list them or 'exit' "
+                    "to stop them and exit shell."
+                )
+                self.kill_jobs_at_exit = True
+                return  # Return to the shell prompt instead of exiting
+
+        # Proceed with exit if no active jobs or after stopping them
         if self.g_cmd == "EOF":
             self.stdout.write("\n")
+
         if self.conf["disable_exit"] != 1:
             sys.exit(0)
 

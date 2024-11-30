@@ -9,6 +9,7 @@ import string
 import shlex
 from getpass import getuser
 from time import strftime, gmtime
+import signal
 
 # import lshell specifics
 from lshell import variables
@@ -122,11 +123,11 @@ def replace_exit_code(line, retcode):
     """Replace the exit code in the command line. Replaces all occurrences of
     $? with the exit code."""
     if re.search(r"[;&\|]", line):
-        p = re.compile(r"(\s|^)(\$\?)([\s|$]?[;&|].*)")
+        pattern = re.compile(r"(\s|^)(\$\?)([\s|$]?[;&|].*)")
     else:
-        p = re.compile(r"(\s|^)(\$\?)(\s|$)")
+        pattern = re.compile(r"(\s|^)(\$\?)(\s|$)")
 
-    line = p.sub(rf" {retcode} \3", line)
+    line = pattern.sub(rf" {retcode} \3", line)
 
     return line
 
@@ -167,9 +168,9 @@ def cmd_parse_execute(command_line, shell_context=None):
             elif executable == "exit":
                 shell_context.do_exit(command)
             elif executable == "history":
-                builtincmd.history(shell_context.conf, shell_context.log)
+                builtincmd.cmd_history(shell_context.conf, shell_context.log)
             elif executable == "cd":
-                retcode = builtincmd.cd(argument, shell_context.conf)
+                retcode = builtincmd.cmd_cd(argument, shell_context.conf)
             else:
                 retcode = getattr(builtincmd, executable)(shell_context.conf)
         else:
@@ -182,24 +183,68 @@ def cmd_parse_execute(command_line, shell_context=None):
 
 
 def exec_cmd(cmd):
-    """Execute a command exactly as entered, without shell interpretation."""
+    """Execute a command exactly as entered, with support for backgrounding via Ctrl+Z."""
+
+    class CtrlZException(Exception):
+        """Custom exception to handle Ctrl+Z (SIGTSTP)."""
+
+        pass
+
+    def handle_sigtstp(signum, frame):
+        """Handle SIGTSTP (Ctrl+Z) by sending the process to the background."""
+        if proc and proc.poll() is None:  # Ensure process is running
+            proc.send_signal(signal.SIGSTOP)  # Stop the process
+            builtincmd.BACKGROUND_JOBS.append(proc)  # Add process to background jobs
+            job_id = len(builtincmd.BACKGROUND_JOBS)
+            sys.stdout.write(f"\n[{job_id}]+  Stopped        {cmd}\n")
+            sys.stdout.flush()
+            raise CtrlZException()  # Raise custom exception for SIGTSTP handling
+
+    def handle_sigcont(signum, frame):
+        """Handle SIGCONT to resume a stopped job in the foreground."""
+        if proc and proc.poll() is None:
+            proc.send_signal(signal.SIGCONT)
+
+    # Check if the command is to be run in the background
+    background = cmd.strip().endswith("&")
+    if background:
+        # Remove '&' and strip any extra spaces
+        cmd = cmd[:-1].strip()
+
     try:
-        # Split the command to handle it as a list of arguments
+        # Register SIGTSTP (Ctrl+Z) and SIGCONT (resume) signal handlers
+        signal.signal(signal.SIGTSTP, handle_sigtstp)
+        signal.signal(signal.SIGCONT, handle_sigcont)
         cmd_args = shlex.split(cmd)
-        # Execute without shell=True to prevent shell interpretation
-        proc = subprocess.Popen(cmd_args)
-        proc.communicate()
-        retcode = proc.returncode
+        if background:
+            with open(os.devnull, "r") as devnull_in:
+                proc = subprocess.Popen(
+                    cmd_args,
+                    stdin=devnull_in,  # Redirect input to /dev/null
+                    stdout=sys.stdout,
+                    stderr=sys.stderr,
+                    preexec_fn=os.setsid,
+                )
+            # add to background jobs and return
+            builtincmd.BACKGROUND_JOBS.append(proc)
+            job_id = len(builtincmd.BACKGROUND_JOBS)
+            print(f"[{job_id}] {cmd} (pid: {proc.pid})")
+            retcode = 0
+        else:
+            proc = subprocess.Popen(cmd_args, preexec_fn=os.setsid)
+            proc.communicate()
+            retcode = proc.returncode if proc.returncode is not None else 0
+
     except FileNotFoundError:
-        # Handle the case where the command is not found
         sys.stderr.write(
             f"Command '{cmd_args[0]}' not found in $PATH or not installed on the system.\n"
         )
         retcode = 127
-    except KeyboardInterrupt:
-        # Properly handle user interruption (SIGTERM)
-        proc.terminate()
-        proc.communicate()
+    except CtrlZException:  # Handle Ctrl+Z
+        retcode = 0
+    except KeyboardInterrupt:  # Handle Ctrl+C
+        if proc and proc.poll() is None:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
         retcode = 130
 
     return retcode
