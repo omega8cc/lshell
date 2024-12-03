@@ -296,32 +296,29 @@ def getpromptbase(conf):
 
 
 def updateprompt(path, conf):
-    """Set the prompt with updated path and user privilege level, supporting $LPS1 format"""
-    promptbase = getpromptbase(conf)
-    prompt_symbol = "# " if os.geteuid() == 0 else "$ "
+    """Set actual prompt to print, updated when changing directories"""
 
-    # Determine dynamic path display if $LPS1 is not defined
-    if os.getenv("LPS1"):
-        prompt = promptbase
-    else:
-        if path == conf["home_path"]:
-            current_path = "~"
-        elif conf.get("prompt_short") == 1:
-            current_path = os.path.basename(path)
-            if path.split('/')[-2] == 'home':
-              prompt = '%s:~$ ' % promptbase
-            elif path.split('/')[-2] == 'clients':
-              prompt = '%s:[sites@%s]$ ' % (promptbase,
-                                            path.split('/')[-1])
-            else:
-              prompt = '%s:[%s]$ ' % (promptbase,
-                                      path.split('/')[-1])
-        elif conf.get("prompt_short") == 2:
-            current_path = path
-        elif path.startswith(conf["home_path"]):
-            current_path = f"~{path[len(conf['home_path']):]}"
+    # get initial promptbase (from configuration)
+    promptbase = getpromptbase(conf)
+
+    # update the prompt when directory is changed
+    if path == conf['home_path']:
+        prompt = '%s:~$ ' % promptbase
+    elif conf['prompt_short'] == 1:
+        if path.split('/')[-2] == 'home':
+            prompt = '%s:~$ ' % promptbase
+        elif path.split('/')[-2] == 'clients':
+            prompt = '%s:[sites@%s]$ ' % (promptbase,
+                                          path.split('/')[-1])
         else:
-            current_path = path
-        prompt = f"{promptbase}:{current_path}{prompt_symbol}"
+            prompt = '%s:[%s]$ ' % (promptbase,
+                                    path.split('/')[-1])
+    elif conf['prompt_short'] == 2:
+        prompt = '%s: %s$ ' % (promptbase, os.getcwd())
+    elif re.findall(conf['home_path'], path):
+        prompt = '%s:~%s$ ' % (promptbase,
+                               path.split(conf['home_path'])[1])
+    else:
+        prompt = '%s:%s$ ' % (promptbase, path)
 
     return prompt
