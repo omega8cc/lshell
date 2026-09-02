@@ -21,6 +21,7 @@ from lshell import sec
 from lshell import messages
 from lshell import audit
 from lshell import containment
+from lshell import landlock
 
 
 def usage(exitcode=1):
@@ -973,12 +974,19 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
         # Register SIGTSTP (Ctrl+Z) and SIGCONT (resume) signal handlers
         signal.signal(signal.SIGTSTP, handle_sigtstp)
         signal.signal(signal.SIGCONT, handle_sigcont)
-        cmd_args = ["bash", "-c", cmd]
+        # The command runs through the system shell named by exec_shell
+        # (default /bin/sh). Upstream moved to "bash -c" here; on BOA /bin/sh is
+        # websh, the dispatcher that honours the account's PHP-CLI pin and
+        # rewrites drush and composer, so the shell must be /bin/sh and must be
+        # configurable, never a hardcoded bash.
+        exec_shell = (conf or {}).get("exec_shell") or "/bin/sh"
+        cmd_args = [exec_shell, "-c", cmd]
         try:
             split_cmd = shlex.split(cmd, posix=True)
         except ValueError:
             split_cmd = []
-        if split_cmd and split_cmd[0] in ("sudo", "su"):
+        privileged = bool(split_cmd) and split_cmd[0] in ("sudo", "su")
+        if privileged:
             cmd_args = split_cmd
             if not background:
                 detached_session = False
@@ -986,6 +994,27 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
         needs_resource_limits = runtime_limits.max_processes > 0
         if os.name == "posix" and (detached_session or needs_resource_limits):
             preexec_fn = containment.build_preexec_fn(detached_session, runtime_limits)
+        # Landlock: confine this command and every process it spawns to the
+        # configured roots, applied in the child right before exec. Skipped
+        # for sudo/su and for landlock_exempt commands (setuid tools would
+        # lose their privilege under no_new_privs).
+        sandbox_rules = (conf or {}).get("landlock_rules") or []
+        if (
+            conf is not None
+            and landlock.enabled(conf)
+            and sandbox_rules
+            and not privileged
+            and not landlock.is_exempt(cmd, conf)
+        ):
+            inner_preexec = preexec_fn
+            sandbox_abi = conf.get("landlock_abi", 0)
+
+            def _sandboxed_preexec():
+                if inner_preexec is not None:
+                    inner_preexec()
+                landlock.restrict(sandbox_rules, sandbox_abi)
+
+            preexec_fn = _sandboxed_preexec
         if background:
             with open(os.devnull, "r") as devnull_in:
                 popen_kwargs = {

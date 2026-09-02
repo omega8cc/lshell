@@ -3,7 +3,7 @@
 import sys
 import os
 
-__version__ = "0.11.1"
+__version__ = "0.11.2"
 
 # Required config variable list per user
 required_config = ["allowed", "forbidden", "warning_counter"]
@@ -113,6 +113,12 @@ configparams = [
     "max_background_jobs=",
     "command_timeout=",
     "max_processes=",
+    "landlock=",
+    "landlock_ro=",
+    "landlock_rw=",
+    "landlock_exempt=",
+    "landlock_strict=",
+    "exec_shell=",
 ]
 
 FORBIDDEN_ENVIRON = (

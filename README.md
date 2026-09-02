@@ -175,6 +175,25 @@ Operational notes:
 - `max_processes` is applied via POSIX `RLIMIT_NPROC` on spawned command processes.
 - Best practice: keep `command_timeout` enabled whenever `max_processes` is strict (especially `1`).
 
+### Landlock child-process confinement (BOA fork)
+
+`allowed` and `path` decide what a user may type; they cannot see what an
+allowed program does next. With `landlock : 1` every command and every
+process it spawns is confined by the kernel (Landlock, Linux 5.13+) to
+`landlock_ro` (read + execute), `landlock_rw` plus the user's `path`
+entries and home (read + write + execute), applied in the child right
+before exec and inherited by the whole process tree; it cannot be lifted,
+`unset LD_PRELOAD` does not help, static binaries are covered. Commands on
+`landlock_exempt` (default `passwd`, `ping`: setuid tools lose their
+privilege under `no_new_privs`) and `sudo`/`su` run without it. On a kernel
+without Landlock commands run unconfined and the error is logged, unless
+`landlock_strict : 1` refuses the login. Check the effective rules with
+`policy-show` (they are derived from the same `path` merge).
+
+`exec_shell` (default `/bin/sh`) names the shell commands run through;
+upstream hardcodes `bash`, which bypasses a dispatcher installed as
+`/bin/sh`.
+
 ### Best practices
 
 - Prefer an explicit `allowed` allow-list instead of `'all'`.

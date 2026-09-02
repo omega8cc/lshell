@@ -6,6 +6,9 @@ from lshell import messages
 
 
 LIST_VALUE_KEYS = {
+    "landlock_ro",
+    "landlock_rw",
+    "landlock_exempt",
     "allowed",
     "allowed_shell_escape",
     "allowed_file_extensions",
@@ -17,6 +20,9 @@ LIST_VALUE_KEYS = {
     "path",
 }
 LIST_OF_STRING_KEYS = {
+    "landlock_ro",
+    "landlock_rw",
+    "landlock_exempt",
     "allowed",
     "allowed_shell_escape",
     "allowed_file_extensions",
@@ -28,6 +34,8 @@ LIST_OF_STRING_KEYS = {
     "path",
 }
 INT_VALUE_KEYS = {
+    "landlock",
+    "landlock_strict",
     "warning_counter",
     "timer",
     "scp",
@@ -49,6 +57,7 @@ INT_VALUE_KEYS = {
 }
 DICT_VALUE_KEYS = {"aliases", "env_vars", "messages"}
 STRING_VALUE_KEYS = {
+    "exec_shell",
     "intro",
     "prompt",
     "home_path",

@@ -15,6 +15,7 @@ import subprocess
 from logging.handlers import SysLogHandler
 
 # import lshell specifics
+from lshell import landlock
 from lshell import utils
 from lshell import variables
 from lshell import builtincmd
@@ -76,6 +77,7 @@ class CheckConfig:
         self.get_config_user()
         self.check_env()
         self.set_noexec()
+        self.set_landlock()
 
     def check_config_file_exists(self, configfile):
         """Check if the configuration file exists, else exit with error"""
@@ -854,6 +856,48 @@ class CheckConfig:
             self.log.error("lshell: noexec library not found")
 
         self.conf["allowed"] += self.conf["allowed_shell_escape"]
+
+    def set_landlock(self):
+        """Resolve the Landlock keys and pre-build the child ruleset.
+
+        Nothing is applied here: the parent shell stays unrestricted (it
+        owns the log file and the config reload); every command's child
+        applies conf["landlock_rules"] before exec, see utils.exec_cmd.
+        """
+        for key, default in (
+            ("landlock", 0),
+            ("landlock_strict", 0),
+            ("landlock_ro", landlock.DEFAULT_RO),
+            ("landlock_rw", landlock.DEFAULT_RW),
+            ("landlock_exempt", landlock.DEFAULT_EXEMPT),
+            ("exec_shell", "/bin/sh"),
+        ):
+            if key in self.conf_raw:
+                self.conf[key] = self._parse_config_value(self.conf_raw[key], key)
+            else:
+                self.conf[key] = default
+        self.conf["landlock_abi"] = 0
+        self.conf["landlock_rules"] = []
+        if not landlock.enabled(self.conf):
+            return
+        abi = landlock.abi_version()
+        if abi < 1:
+            if landlock.strict(self.conf):
+                self.log.critical("Fatal: landlock=1 with landlock_strict=1 but this kernel has no Landlock")
+                sys.exit(2)
+            self.log.error("Landlock: not available on this kernel, commands run UNCONFINED")
+            self.conf["landlock"] = 0
+            return
+        self.conf["landlock_abi"] = abi
+        self.conf["landlock_rules"] = landlock.build_rules(self.conf)
+        self.log.info(
+            "Landlock: ABI %d, %d rw + %d ro roots"
+            % (
+                abi,
+                len([r for r in self.conf["landlock_rules"] if r[1] == "rw"]),
+                len([r for r in self.conf["landlock_rules"] if r[1] == "ro"]),
+            )
+        )
 
     def get_config_mtime(self, configfile):
         """get configuration file modification time, and store in the
