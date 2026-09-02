@@ -129,8 +129,13 @@ def _split_path_acl(acl):
     return out
 
 
-def _resolve_links_below(root, max_depth=2):
-    """Real targets of symlinks in the first levels of a root (relocated stores)."""
+def _resolve_links_below(root, max_depth=3):
+    """Real targets of symlinks in the first levels of a root.
+
+    Three levels: a relocated files store sits at <root>/static/files, and a
+    per-user drush extension farm at <home>/.drush/usr/<tool>, each link
+    pointing outside the root. Deeper links are the user's own business.
+    """
     found = []
     try:
         root_real = os.path.realpath(root)
@@ -162,7 +167,7 @@ def build_rules(conf):
     """Return [(path, 'ro'|'rw'), ...] from the resolved configuration.
 
     RW: the user's 'path' allow-list (already realpath'd by lshell, home
-    included), landlock_rw, and the real targets of symlinks found up to two
+    included), landlock_rw, and the real targets of symlinks found up to three
     levels inside each RW root. RO: landlock_ro. Paths that do not exist are
     dropped, so a template can list every distro's layout at once.
     """

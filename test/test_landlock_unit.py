@@ -48,6 +48,19 @@ class TestLandlockRules(unittest.TestCase):
         self.assertTrue(landlock.strict({"landlock_strict": 1}))
         self.assertFalse(landlock.strict({}))
 
+    def test_links_resolved_three_levels_down(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as target:
+            deep = os.path.join(root, "a", "b")
+            os.makedirs(deep)
+            os.symlink(target, os.path.join(deep, "link"))
+            found = landlock._resolve_links_below(root)
+            self.assertIn(os.path.realpath(target), found)
+            too_deep = os.path.join(root, "a", "b", "c")
+            os.makedirs(too_deep)
+            os.symlink(target + "x", os.path.join(too_deep, "link2"))
+            self.assertNotIn(os.path.realpath(target + "x"), landlock._resolve_links_below(root))
+
     def test_abi_version_is_int(self):
         self.assertIsInstance(landlock.abi_version(), int)
         self.assertGreaterEqual(landlock.abi_version(), 0)

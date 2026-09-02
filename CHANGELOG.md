@@ -3,6 +3,9 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.3 (BOA fork, 2026-09-02)
+- Fix: symlink targets are resolved three levels inside each read-write root (was two), so a per-user drush extension farm at `~/.drush/usr/<tool>` pointing into the account tree keeps loading under Landlock (found on the first real-shell upgrade drill: drush8 failed to open a command file).
+
 ### v0.11.2 (BOA fork, 2026-09-02)
 - Feature: Landlock child-process confinement (`landlock`, `landlock_ro`, `landlock_rw`, `landlock_exempt`, `landlock_strict`): every command and every process it spawns is confined by the kernel to the configured roots plus the user's `path` entries and home, applied before exec and inherited, never liftable. Fails open with a log line on kernels without Landlock unless strict.
 - Feature: `exec_shell` (default `/bin/sh`) names the shell commands run through, restoring the `/bin/sh -c` execution of 0.10 so a dispatcher installed as `/bin/sh` is honoured (upstream hardcodes `bash -c`).
