@@ -10,35 +10,94 @@ import shlex
 import glob
 
 # import lshell specifics
+from lshell import messages
 from lshell import utils
+from lshell import audit
+
+EXTENSION_RESTRICTION_EXEMPT_COMMANDS = {"cd", "clear", "fg", "bg", "ls"}
+MAX_WILDCARD_MATCHES = 4096
+
+
+def _is_assignment_word(word):
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*$", word))
+
+
+def should_enforce_file_extensions(command):
+    """Return True when extension restrictions should apply to this command."""
+    return command not in EXTENSION_RESTRICTION_EXEMPT_COMMANDS
+
+
+def _split_command_for_auth(command_line):
+    """Return (command, args, full_command) for auth checks, skipping VAR=VALUE prefixes."""
+    try:
+        tokens = shlex.split(command_line, posix=True)
+    except ValueError:
+        return "", [], ""
+
+    index = 0
+    while index < len(tokens) and _is_assignment_word(tokens[index]):
+        index += 1
+
+    if index >= len(tokens):
+        return "", [], ""
+
+    command = tokens[index]
+    args = tokens[index + 1 :]
+    full_command = " ".join([command] + args).strip()
+    return command, args, full_command
 
 
 def warn_count(messagetype, command, conf, strict=None, ssh=None):
     """Update the warning_counter, log and display a warning to the user"""
 
     log = conf["logpath"]
+    if messagetype == "unknown syntax":
+        primary_message = messages.get_message(
+            conf, "unknown_syntax", command=command
+        )
+    else:
+        primary_message = messages.get_forbidden_message(conf, messagetype, command)
+    audit.set_decision_reason(
+        conf, f"forbidden {messagetype}: {str(command).strip()}"
+    )
 
     if ssh:
         return 1, conf
 
-    if strict:
-        conf["warning_counter"] -= 1
-        if conf["warning_counter"] < 0:
-            log.critical(f'*** forbidden {messagetype} -> "{command}"')
-            log.critical("*** Kicked out")
-            sys.exit(1)
-        else:
-            log.critical(f'*** forbidden {messagetype} -> "{command}"')
-            sys.stderr.write(
-                f"*** You have {conf['warning_counter']} warning(s) left,"
-                " before getting kicked out.\n"
-            )
-            log.error(f"*** User warned, counter: {conf['warning_counter']}")
-            sys.stderr.write("This incident has been reported.\n")
-    elif not conf["quiet"]:
-        log.critical(f"*** forbidden {messagetype}: {command}")
+    conf["warning_counter"] -= 1
+    if conf["warning_counter"] < 0:
+        log.critical(primary_message)
+        log.critical(messages.get_message(conf, "session_terminated"))
+        sys.exit(1)
+
+    log.critical(primary_message)
+    remaining = conf["warning_counter"]
+    violation_label = "violation" if remaining == 1 else "violations"
+    sys.stderr.write(
+        messages.get_message(
+            conf,
+            "warning_remaining",
+            remaining=remaining,
+            violation_label=violation_label,
+        )
+        + "\n"
+    )
+    log.error(f"lshell: user warned, counter: {remaining}")
 
     # Return 1 to indicate a warning was triggered.
+    return 1, conf
+
+
+def warn_unknown_syntax(command, conf, strict=None, ssh=None):
+    """Warn on unknown syntax, honoring strict-mode warning counting."""
+    if strict:
+        return warn_count("unknown syntax", command, conf, strict=strict, ssh=ssh)
+
+    log = conf["logpath"]
+    log.warning(f'INFO: unknown syntax -> "{command}"')
+    audit.set_decision_reason(conf, f"unknown syntax: {command}")
+    # Keep legacy UX: unknown syntax is always printed to stderr.
+    sys.stderr.write(messages.get_message(conf, "unknown_syntax", command=command) + "\n")
     return 1, conf
 
 
@@ -56,20 +115,169 @@ def tokenize_command(command):
     return tokens
 
 
+def _safe_realpath(path):
+    """Resolve canonical path and ignore malformed/unresolvable inputs."""
+    try:
+        return os.path.realpath(path)
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _safe_expand_path(path):
+    """Expand user/env path fragments and reject malformed values."""
+    try:
+        expanded = os.path.expanduser(path)
+        return os.path.expandvars(expanded)
+    except (TypeError, ValueError):
+        return None
+
+
 def expand_shell_wildcards(item):
-    """Expand shell wildcards in the item and return the expanded path"""
+    """Expand shell wildcards and return all candidate filesystem paths."""
 
-    # Expand shell variables like $HOME
-    item = os.path.expanduser(item)
-    item = os.path.expandvars(item)
-    item = os.path.realpath(item)  # this is a hack - needs to be reviewed
-    # test if item is a directory
-    expanded_items = glob.glob(item, recursive=True)
+    # Expand shell variables like $HOME first.
+    expanded_item = _safe_expand_path(item)
+    if expanded_item is None:
+        return []
+
+    # Expand wildcard patterns against the filesystem and validate all matches.
+    # Fail closed if expansion fans out too much to avoid memory abuse.
+    try:
+        expanded_items = []
+        for match in glob.iglob(expanded_item, recursive=True):
+            resolved = _safe_realpath(match)
+            if resolved:
+                expanded_items.append(resolved)
+            if len(expanded_items) > MAX_WILDCARD_MATCHES:
+                return []
+    except (OSError, RuntimeError, ValueError, re.error):
+        return []
+
     if expanded_items:
-        # Return all matches instead of just the first one
-        item = expanded_items[0]
+        return expanded_items
 
-    return item
+    # If no glob match exists, still validate the canonical target path.
+    resolved_item = _safe_realpath(expanded_item)
+    return [resolved_item] if resolved_item else []
+
+
+def _split_path_acl_entries(path_acl):
+    """Convert legacy path ACL string format to canonical path entries."""
+    if not path_acl:
+        return []
+
+    entries = []
+    for token in str(path_acl).split("|"):
+        candidate = token.strip()
+        if not candidate:
+            continue
+        resolved = _safe_realpath(candidate)
+        if resolved:
+            entries.append(resolved)
+    return entries
+
+
+def _is_path_within_base(path, base):
+    """Return True when path is equal to or nested under base."""
+    try:
+        return os.path.commonpath([path, base]) == base
+    except ValueError:
+        # Different mount/drive semantics: treat as not matching.
+        return False
+
+
+def _is_path_allowed(candidate, allowed_roots, denied_roots):
+    """Return True when candidate path passes allow/deny ACL precedence.
+
+    Specificity rule:
+    - most specific matching prefix wins;
+    - ties favor deny.
+    This preserves historical expectation that:
+      ['/'] - ['/var'] + ['/var/log']
+    allows /var/log while still denying /var.
+    """
+
+    def _specificity(path):
+        normalized = os.path.normpath(path)
+        if normalized == os.sep:
+            return 0
+        return len([segment for segment in normalized.split(os.sep) if segment])
+
+    matching_allows = [root for root in allowed_roots if _is_path_within_base(candidate, root)]
+    matching_denies = [root for root in denied_roots if _is_path_within_base(candidate, root)]
+
+    # Legacy behavior: empty allow-list means unrestricted unless denied.
+    if not allowed_roots:
+        return not bool(matching_denies)
+
+    if not matching_allows:
+        return False
+
+    best_allow = max(_specificity(root) for root in matching_allows)
+    best_deny = max(_specificity(root) for root in matching_denies) if matching_denies else -1
+
+    return best_allow > best_deny
+
+
+def _format_path_for_message(path):
+    """Format path in user-facing messages with historical trailing-slash behavior."""
+    if os.path.isdir(path) and not path.endswith("/"):
+        return f"{path}/"
+    return path
+
+
+def _looks_like_path_token(token):
+    """Heuristic: return True if a token appears to reference a filesystem path."""
+    if not token:
+        return False
+    if token.startswith(("/", ".", "~")):
+        return True
+    if "/" in token or "\\" in token:
+        return True
+    if any(char in token for char in ["*", "?", "[", "]"]):
+        return True
+    return False
+
+
+def _path_tokens_from_line(line):
+    """Extract path-like tokens from command segments, excluding bare command names."""
+    segments = utils.split_commands(line)
+    if not segments:
+        return []
+
+    path_tokens = []
+    for segment in segments:
+        try:
+            tokens = shlex.split(segment, posix=True)
+        except ValueError:
+            tokens = tokenize_command(segment)
+        if not tokens:
+            continue
+
+        index = 0
+        while index < len(tokens) and _is_assignment_word(tokens[index]):
+            index += 1
+        if index >= len(tokens):
+            continue
+
+        command = tokens[index]
+        args = tokens[index + 1 :]
+
+        if command == "cd" and args:
+            # `cd var` style operands are path targets even without slashes.
+            path_tokens.append(args[0])
+            continue
+
+        if args:
+            path_tokens.extend(token for token in args if _looks_like_path_token(token))
+            continue
+
+        # Single token mode (used by completion/policy path checks):
+        # only treat it as a path when it looks path-like.
+        if _looks_like_path_token(command):
+            path_tokens.append(command)
+
+    return path_tokens
 
 
 def check_path(line, conf, completion=None, ssh=None, strict=None):
@@ -77,35 +285,58 @@ def check_path(line, conf, completion=None, ssh=None, strict=None):
     are allowed to see this path. If user is not allowed, it calls
     warn_count. In case of completion, it only returns 0 or 1.
     """
-    allowed_path_re = str(conf["path"][0])
-    denied_path_re = str(conf["path"][1][:-1])
+    allowed_roots = _split_path_acl_entries(conf["path"][0])
+    denied_roots = _split_path_acl_entries(conf["path"][1])
 
-    line = tokenize_command(line)
+    path_tokens = _path_tokens_from_line(line)
 
-    for item in line:
-        tomatch = expand_shell_wildcards(item)
-        if os.path.isdir(tomatch) and tomatch[-1] != "/":
-            tomatch += "/"
-        match_allowed = re.findall(allowed_path_re, tomatch)
-        if denied_path_re:
-            match_denied = re.findall(denied_path_re, tomatch)
-        else:
-            match_denied = None
-
-        # if path not allowed
-        # case path executed: warn, and return 1
-        # case completion: return 1
-        if not match_allowed or match_denied:
+    for item in path_tokens:
+        candidates = expand_shell_wildcards(item)
+        if not candidates:
             if not completion:
-                ret, conf = warn_count("path", tomatch, conf, strict=strict, ssh=ssh)
+                ret, conf = warn_count("path", item, conf, strict=strict, ssh=ssh)
             return 1, conf
 
+        for candidate in candidates:
+            if not _is_path_allowed(candidate, allowed_roots, denied_roots):
+                if not completion:
+                    message_path = _format_path_for_message(candidate)
+                    ret, conf = warn_count(
+                        "path", message_path, conf, strict=strict, ssh=ssh
+                    )
+                return 1, conf
+
     if not completion:
-        if not re.findall(allowed_path_re, os.getcwd() + "/"):
-            ret, conf = warn_count("path", tomatch, conf, strict=strict, ssh=ssh)
+        current_dir = os.path.realpath(os.getcwd())
+        if not _is_path_allowed(current_dir, allowed_roots, denied_roots):
+            ret, conf = warn_count(
+                "path",
+                _format_path_for_message(current_dir),
+                conf,
+                strict=strict,
+                ssh=ssh,
+            )
             os.chdir(conf["home_path"])
             conf["promptprint"] = utils.updateprompt(os.getcwd(), conf)
             return 1, conf
+    return 0, conf
+
+
+def check_forbidden_chars(line, conf, strict=None, ssh=None):
+    """Check if the line contains any forbidden
+    characters. If so, it calls warn_count.
+    """
+    for item in conf["forbidden"]:
+        # keep compatibility with historical behavior from check_secure:
+        # allow "&&" and "||" even when single "&" or "|" are forbidden.
+        if item in ["&", "|"]:
+            escaped_item = re.escape(item)
+            if re.search(rf"(?<!{escaped_item}){escaped_item}(?!{escaped_item})", line):
+                ret, conf = warn_count("character", item, conf, strict=strict, ssh=ssh)
+                return ret, conf
+        elif item in line:
+            ret, conf = warn_count("character", item, conf, strict=strict, ssh=ssh)
+            return ret, conf
     return 0, conf
 
 
@@ -180,7 +411,7 @@ def check_secure(line, conf, strict=None, ssh=None):
     for item in curly:
         # split to get variable only, and remove last character "}"
         if re.findall(r"=|\+|\?|\-", item):
-            variable = re.split(r"=|\+|\?|\-", item, 1)
+            variable = re.split(r"=|\+|\?|\-", item, maxsplit=1)
         else:
             variable = item
         ret_check_path, conf = check_path(variable[1][:-1], conf, strict=strict)
@@ -199,18 +430,19 @@ def check_secure(line, conf, strict=None, ssh=None):
         # remove trailing parenthesis
         separate_line = re.sub(r"\)$", "", separate_line)
         separate_line = " ".join(separate_line.split())
-        splitcmd = separate_line.strip().split(" ")
-
-        # Extract the command and its arguments
-        command = splitcmd[0]
-        command_args_list = splitcmd[1:]
-        command_args_string = " ".join(command_args_list)
-        full_command = f"{command} {command_args_string}".strip()
+        command, command_args_list, full_command = _split_command_for_auth(
+            separate_line
+        )
 
         # in case of a sudo command, check in sudo_commands list if allowed
         if command == "sudo" and command_args_list:
             # allow the -u (user) flag
             if command_args_list[0] == "-u" and command_args_list:
+                if len(command_args_list) < 3:
+                    ret, conf = warn_count(
+                        "sudo command", oline, conf, strict=strict, ssh=ssh
+                    )
+                    return ret, conf
                 sudocmd = command_args_list[2]
             else:
                 sudocmd = command_args_list[0]
@@ -235,11 +467,16 @@ def check_secure(line, conf, strict=None, ssh=None):
             and command not in conf["allowed"]
             and command
         ):
-            ret, conf = warn_count("command", command, conf, strict=strict, ssh=ssh)
+            if strict:
+                ret, conf = warn_count("command", command, conf, strict=strict, ssh=ssh)
+            else:
+                ret, conf = warn_unknown_syntax(full_command, conf, strict=strict, ssh=ssh)
             return ret, conf
 
         # Check if the command contains any forbidden extensions
-        if conf.get("allowed_file_extensions"):
+        if conf.get("allowed_file_extensions") and should_enforce_file_extensions(
+            command
+        ):
             allowed_extensions = conf["allowed_file_extensions"]
             check_extensions, disallowed_extensions = check_allowed_file_extensions(
                 full_command, allowed_extensions
@@ -258,29 +495,73 @@ def check_secure(line, conf, strict=None, ssh=None):
 
 
 def check_allowed_file_extensions(command_line, allowed_extensions):
-    """Checks if any file extensions in the command line are allowed."""
+    """Checks if file arguments in the command line use allowed extensions."""
     # Split the command using shlex to handle quotes and escape characters
     try:
         tokens = shlex.split(command_line)
     except ValueError as exception:
         # Log error or provide user feedback on the invalid input
-        print(f"Error parsing command line: {exception}")
+        print(f"lshell: error parsing command line: {exception}")
         return True, []
 
-    # Extract file extensions from tokens
-    extensions_in_command = []
-    for token in tokens:
-        match = re.search(r"\.\w+", token)
-        if match:
-            extensions_in_command.append(match.group())
+    if not tokens:
+        return True, None
 
-    # Check each extension against the allowed_extensions list
-    disallowed_extensions = [
-        ext for ext in extensions_in_command if ext not in allowed_extensions
-    ]
+    candidates = []
+    for token in tokens[1:]:
+        if _is_assignment_word(token):
+            continue
 
-    # if len(disallowed_extensions) == 1:
-    #     disallowed_extensions = disallowed_extensions[0]
+        # Parse option values such as `--include=*.log` as potential file globs.
+        if token.startswith("-"):
+            if "=" not in token:
+                continue
+            _, value = token.split("=", 1)
+            values_to_check = [value] if value else []
+        else:
+            values_to_check = [token]
+
+        for value in values_to_check:
+            candidate = value.rstrip("/")
+            basename = os.path.basename(candidate)
+
+            if not basename or basename in [".", ".."]:
+                continue
+
+            extension = os.path.splitext(basename)[1]
+            # Existing directories are valid SCP/SFTP targets and do not
+            # represent file-extension risk on their own.
+            expanded_value = _safe_expand_path(value)
+            resolved_value = (
+                _safe_realpath(expanded_value) if expanded_value is not None else None
+            )
+            is_existing_dir = bool(resolved_value and os.path.isdir(resolved_value))
+            has_path_markers = any(
+                char in value for char in ["/", "\\", "*", "?", "[", "]"]
+            ) or value.startswith(("~", "."))
+            is_simple_bareword = bool(re.match(r"^[A-Za-z0-9_-]+$", basename))
+
+            candidates.append(
+                {
+                    "extension": extension if extension else "<none>",
+                    "explicit_path_like": bool(extension) or has_path_markers,
+                    "simple_bareword": is_simple_bareword and not has_path_markers,
+                    "is_existing_dir": is_existing_dir,
+                }
+            )
+
+    has_explicit_path_like = any(item["explicit_path_like"] for item in candidates)
+    disallowed_extensions = []
+    for item in candidates:
+        # If explicit path-like operands are present, treat lone bare words as
+        # likely literals/patterns rather than filenames.
+        if has_explicit_path_like and item["simple_bareword"]:
+            continue
+        if item["is_existing_dir"]:
+            continue
+        extension = item["extension"]
+        if extension not in allowed_extensions and extension not in disallowed_extensions:
+            disallowed_extensions.append(extension)
 
     if disallowed_extensions:
         return False, disallowed_extensions

@@ -3,6 +3,8 @@
 import glob
 import sys
 import os
+import re
+import shlex
 import readline
 import signal
 
@@ -14,35 +16,85 @@ from lshell import utils
 # Store background jobs
 BACKGROUND_JOBS = []
 
+POLICY_COMMANDS = [
+    "policy-show",
+    "policy-path",
+    "policy-sudo",
+    "lpath",
+    "lsudo",
+]
+
+builtins_list = [
+    "cd",
+    "ls",
+    "clear",
+    "exit",
+    "export",
+    "history",
+    "policy-show",
+    "policy-path",
+    "policy-sudo",
+    "lpath",
+    "lsudo",
+    "help",
+    "fg",
+    "bg",
+    "jobs",
+    "source",
+]
+
+
+def _cancel_job_timeout(job):
+    """Cancel a watchdog timer attached to a background job, if any."""
+    timer = getattr(job, "lshell_timeout_timer", None)
+    if timer is not None:
+        timer.cancel()
+
 
 def cmd_lpath(conf):
-    """lists allowed and forbidden path"""
-    if conf["path"][0]:
-        sys.stdout.write("Allowed:\n")
-        lpath_allowed = conf["path"][0].split("|")
-        lpath_allowed.sort()
+    """Show path policy in a concise, readable format."""
+    current_dir = os.path.realpath(os.getcwd())
+    current_match = current_dir if current_dir.endswith("/") else f"{current_dir}/"
+    allowed_re = str(conf["path"][0])
+    denied_re = str(conf["path"][1][:-1])
+    current_allowed = bool(re.findall(allowed_re, current_match))
+    current_denied = bool(re.findall(denied_re, current_match)) if denied_re else False
+    current_status = "allowed" if current_allowed and not current_denied else "denied"
+
+    sys.stdout.write("Path Policy\n")
+    sys.stdout.write("-----------\n")
+    sys.stdout.write(f"Current directory      : {current_dir} ({current_status})\n")
+    sys.stdout.write("\nAllowed paths\n")
+    sys.stdout.write("-------------\n")
+    lpath_allowed = sorted(path for path in conf["path"][0].split("|") if path)
+    if lpath_allowed:
         for path in lpath_allowed:
-            if path:
-                sys.stdout.write(f" {path}\n")
-    if conf["path"][1]:
-        sys.stdout.write("Denied:\n")
-        lpath_denied = conf["path"][1].split("|")
-        lpath_denied.sort()
+            sys.stdout.write(f"{path}\n")
+    else:
+        sys.stdout.write("none\n")
+
+    lpath_denied = sorted(path for path in conf["path"][1].split("|") if path)
+    if lpath_denied:
+        sys.stdout.write("\nDenied paths\n")
+        sys.stdout.write("------------\n")
         for path in lpath_denied:
-            if path:
-                sys.stdout.write(f" {path}\n")
+            sys.stdout.write(f"{path}\n")
     return 0
 
 
 def cmd_lsudo(conf):
-    """lists allowed sudo commands"""
-    if "sudo_commands" in conf and len(conf["sudo_commands"]) > 0:
-        sys.stdout.write("Allowed sudo commands:\n")
-        for command in conf["sudo_commands"]:
-            sys.stdout.write(f" - {command}\n")
+    """Show sudo policy in a concise, readable format."""
+    sudo_commands = sorted(conf.get("sudo_commands", []))
+    enabled = bool(sudo_commands)
+
+    sys.stdout.write("Sudo Policy\n")
+    sys.stdout.write("-----------\n")
+    sys.stdout.write(f"Sudo access            : {'enabled' if enabled else 'disabled'}\n")
+    if enabled:
+        sys.stdout.write(f"Allowed via sudo       : {', '.join(sudo_commands)}\n")
         return 0
 
-    sys.stdout.write("No sudo commands allowed\n")
+    sys.stdout.write("Allowed via sudo       : none\n")
     return 1
 
 
@@ -71,34 +123,34 @@ def cmd_history(conf, log):
 
 def cmd_export(args):
     """export environment variables"""
-    # if command contains at least 1 space
-    if args.count(" "):
-        env = args.split(" ", 1)[1]
-        # if it contains the equal sign, consider only the first one
-        if env.count("="):
-            var, value = env.split(" ")[0].split("=")[0:2]
-            # disallow dangerous variable
-            if var in variables.FORBIDDEN_ENVIRON:
-                return 1, var
-            # Strip the quotes from the value if it begins and ends with quotes (single or double)
-            if (value.startswith('"') and value.endswith('"')) or (
-                value.startswith("'") and value.endswith("'")
-            ):
-                value = value[1:-1]
-            os.environ.update({var: value})
+    try:
+        tokens = shlex.split(args, posix=True)
+    except ValueError:
+        return 0, None
+
+    if len(tokens) >= 2 and "=" in tokens[1]:
+        var, value = tokens[1].split("=", 1)
+        # disallow dangerous variable
+        if var in variables.FORBIDDEN_ENVIRON:
+            return 1, var
+        os.environ.update({var: value})
     return 0, None
 
 
 def cmd_source(envfile):
     """Source a file in the current shell context"""
-    envfile = os.path.expandvars(envfile)
+    envfile = envfile.strip().strip("'").strip('"')
+    envfile = os.path.expanduser(os.path.expandvars(envfile))
     try:
         with open(envfile, encoding="utf-8") as env_vars:
             for env_var in env_vars.readlines():
-                if env_var.split(" ", 1)[0] == "export":
-                    cmd_export(env_var.strip())
+                line = env_var.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    cmd_export(line)
     except (OSError, IOError):
-        sys.stderr.write(f"ERROR: Unable to read environment file: {envfile}\n")
+        sys.stderr.write(f"lshell: unable to read environment file: {envfile}\n")
         return 1
     return 0
 
@@ -149,26 +201,30 @@ def cmd_cd(directory, conf):
 
 def check_background_jobs():
     """Check the status of background jobs and print a completion message if done."""
-    global BACKGROUND_JOBS
-    updated_jobs = []
+    active_jobs = []
     for idx, job in enumerate(BACKGROUND_JOBS, start=1):
         if job.poll() is None:
-            # Process is still running
-            updated_jobs.append((idx, job.args, job.pid))
-        else:
-            # Process has finished
-            status = "Done" if job.returncode == 0 else "Failed"
-            args = " ".join(job.args)
-            # only print if the job has not been interrupted by the user
-            if job.returncode != -2:
-                print(f"[{idx}]+  {status}                    {args}")
+            active_jobs.append(job)
+            continue
 
-            # Remove the job from the list of background jobs
-            BACKGROUND_JOBS.pop(idx - 1)
+        _cancel_job_timeout(job)
+        if getattr(job, "lshell_timeout_triggered", False):
+            print(f"[{idx}]+  Timed Out               {_job_command(job)}")
+            continue
+
+        status = "Done" if job.returncode == 0 else "Failed"
+        args = _job_command(job)
+        # only print if the job has not been interrupted by the user
+        if job.returncode != -2:
+            print(f"[{idx}]+  {status}                    {args}")
+
+    BACKGROUND_JOBS[:] = active_jobs
 
 
 def get_job_status(job):
     """Return the status of a background job."""
+    if getattr(job, "lshell_timeout_triggered", False):
+        return "Timed Out"
     if job.poll() is None:
         status = "Stopped"
     elif job.poll() == 0:
@@ -178,18 +234,27 @@ def get_job_status(job):
     return status
 
 
+def _job_command(job):
+    """Return the original command line for a tracked job."""
+    return getattr(job, "lshell_cmd", " ".join(job.args))
+
+
 def jobs():
     """Return a list of background jobs."""
-    global BACKGROUND_JOBS
     joblist = []
-    for idx, job in enumerate(BACKGROUND_JOBS, start=1):
+    active_jobs = []
+    for job in BACKGROUND_JOBS:
+        if job.poll() is not None:
+            _cancel_job_timeout(job)
+            continue
+
+        active_jobs.append(job)
+        idx = len(active_jobs)
         status = get_job_status(job)
-        if status in ["Stopped", "Killed"]:
-            if job.poll() is not None:
-                BACKGROUND_JOBS.pop(idx - 1)
-                continue
-        cmd = " ".join(job.args)
+        cmd = _job_command(job)
         joblist.append([idx, status, cmd])
+
+    BACKGROUND_JOBS[:] = active_jobs
     return joblist
 
 
@@ -218,8 +283,6 @@ def cmd_jobs():
 
 def cmd_bg_fg(job_type, job_id):
     """Resume a backgrounded job."""
-
-    global BACKGROUND_JOBS
     if job_type == "bg":
         print("lshell: bg not supported")
         return 1
@@ -229,7 +292,7 @@ def cmd_bg_fg(job_type, job_id):
         try:
             job_id = int(job_id)
         except ValueError:
-            print("Invalid job ID.")
+            print("lshell: invalid job ID")
             return 1
     else:
         # Use the last job if no specific job_id is provided
@@ -243,8 +306,30 @@ def cmd_bg_fg(job_type, job_id):
         job = BACKGROUND_JOBS[job_id - 1]
         if job.poll() is None:
             if job_type == "fg":
+                class CtrlZForeground(Exception):
+                    """Raised when the foreground job is suspended with Ctrl+Z."""
+
+                    pass
+
+                def handle_sigtstp(signum, frame):
+                    """Suspend the foreground job and keep/update its jobs list entry."""
+                    if job.poll() is None:
+                        os.killpg(os.getpgid(job.pid), signal.SIGSTOP)
+                        if job in BACKGROUND_JOBS:
+                            current_job_id = BACKGROUND_JOBS.index(job) + 1
+                        else:
+                            BACKGROUND_JOBS.append(job)
+                            current_job_id = len(BACKGROUND_JOBS)
+                        sys.stdout.write(
+                            f"\n[{current_job_id}]+  Stopped        {_job_command(job)}\n"
+                        )
+                        sys.stdout.flush()
+                    raise CtrlZForeground()
+
+                previous_sigtstp_handler = signal.getsignal(signal.SIGTSTP)
                 try:
-                    print(" ".join(job.args))
+                    signal.signal(signal.SIGTSTP, handle_sigtstp)
+                    print(_job_command(job))
                     # Bring it to the foreground and wait
                     os.killpg(os.getpgid(job.pid), signal.SIGCONT)
                     job.wait()
@@ -252,10 +337,14 @@ def cmd_bg_fg(job_type, job_id):
                     if job.poll() is not None:
                         BACKGROUND_JOBS.pop(job_id - 1)
                     return 0
+                except CtrlZForeground:
+                    return 0
                 except KeyboardInterrupt:
                     os.killpg(os.getpgid(job.pid), signal.SIGINT)
                     BACKGROUND_JOBS.pop(job_id - 1)
                     return 130
+                finally:
+                    signal.signal(signal.SIGTSTP, previous_sigtstp_handler)
             # bg not supported at the moment
             # elif job_type == "bg":
             #     print(f"lshell: bg not supported")

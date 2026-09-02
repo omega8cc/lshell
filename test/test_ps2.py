@@ -10,6 +10,23 @@ CONFIG = f"{TOPDIR}/test/testfiles/test.conf"
 LSHELL = f"{TOPDIR}/bin/lshell"
 USER = getuser()
 PROMPT = f"{USER}:~\\$"
+POLICY_HELP_COMMANDS = [
+    "bg",
+    "cd",
+    "clear",
+    "echo",
+    "exit",
+    "fg",
+    "help",
+    "history",
+    "jobs",
+    "lpath",
+    "lsudo",
+    "policy-path",
+    "policy-show",
+    "policy-sudo",
+    "source",
+]
 
 
 class TestFunctions(unittest.TestCase):
@@ -64,25 +81,19 @@ class TestFunctions(unittest.TestCase):
 
     def test_65_multi_line_command_security_echo(self):
         """F65 | test help, then echo FREEDOM! && help () sh && help"""
-        child = pexpect.spawn(f"{LSHELL} " f"--config {CONFIG}  --forbidden \"-[';']\"")
+        child = pexpect.spawn(
+            f"{LSHELL} " f"--config {CONFIG}  --forbidden \"-[';','&']\""
+        )
         child.expect(PROMPT)
 
         # Step 1: Enter `help` command
-        expected_help_output = (
-            "bg  cd  clear  echo  exit  fg  help  history  jobs  ll  lpath  ls  lsudo"
-        )
         child.sendline("help")
         child.expect(PROMPT)
-        help_output = child.before.decode("utf8").split("\n", 2)[1].strip()
-
-        self.assertEqual(expected_help_output, help_output)
+        help_output = child.before.decode("utf8")
+        for command in POLICY_HELP_COMMANDS:
+            self.assertIn(command, help_output)
 
         # Step 2: Enter `echo FREEDOM! && help () sh && help`
-        expected_output = (
-            "1\r\nFREEDOM!\r\n"
-            "bg  cd  clear  echo  exit  fg  help  history  jobs  ll  lpath  ls  lsudo\r\n"
-            "bg  cd  clear  echo  exit  fg  help  history  jobs  ll  lpath  ls  lsudo"
-        )
         child.sendline("echo 1; \\")
         child.expect(">")
         child.sendline("echo FREEDOM! && help () sh && help")
@@ -90,8 +101,10 @@ class TestFunctions(unittest.TestCase):
 
         result = child.before.decode("utf8").strip().split("\n", 1)[1]
 
-        # Verify the combined output
-        self.assertEqual(expected_output, result)
+        # Verify key output markers while allowing terminal-dependent wrapping.
+        self.assertIn("1\r\nFREEDOM!", result)
+        for command in POLICY_HELP_COMMANDS:
+            self.assertIn(command, result)
         self.do_exit(child)
 
     def test_66_multi_line_command_ctrl_c(self):

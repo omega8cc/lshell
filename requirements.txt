@@ -1,4 +1,3 @@
-configparser
-logging
-readline
 pexpect
+pyparsing
+hypothesis>=6.0.0

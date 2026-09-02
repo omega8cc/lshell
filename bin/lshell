@@ -17,42 +17,16 @@
 #  You should have received a copy of the GNU General Public License
 #  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-""" calls lshell function """
+"""Thin wrapper for the lshell CLI."""
 
 import os
 import sys
-import signal
 
-from lshell.checkconfig import CheckConfig
-from lshell.shellcmd import ShellCmd, LshellTimeOut
+TOPDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if TOPDIR not in sys.path:
+    sys.path.insert(0, TOPDIR)
 
-
-def main():
-    """main function"""
-    # set SHELL and get LSHELL_ARGS env variables
-    os.environ["SHELL"] = os.path.realpath(sys.argv[0])
-    if "LSHELL_ARGS" in os.environ:
-        args = sys.argv[1:] + eval(os.environ["LSHELL_ARGS"])
-    else:
-        args = sys.argv[1:]
-
-    userconf = CheckConfig(args).returnconf()
-
-    def disable_ctrl_z(signum, frame):
-        pass  # Do nothing when Ctrl+Z is pressed
-
-    signal.signal(signal.SIGTSTP, disable_ctrl_z)
-
-    try:
-        cli = ShellCmd(userconf, args)
-        cli.cmdloop()
-
-    except (KeyboardInterrupt, EOFError):
-        sys.stdout.write("\nExited on user request\n")
-        sys.exit(0)
-    except LshellTimeOut:
-        userconf["logpath"].error("Timer expired")
-        sys.stdout.write("\nTime is up.\n")
+from lshell.cli import main
 
 
 if __name__ == "__main__":

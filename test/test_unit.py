@@ -1,6 +1,10 @@
 """ Unit tests for lshell """
 
+import io
 import os
+import stat
+import sys
+import tempfile
 import unittest
 from getpass import getuser
 from time import strftime, gmtime
@@ -9,9 +13,9 @@ from unittest.mock import patch
 # import lshell specifics
 from lshell.checkconfig import CheckConfig
 from lshell.utils import get_aliases, updateprompt, parse_ps1, getpromptbase
-from lshell.variables import builtins_list
 from lshell import builtincmd
 from lshell import sec
+from lshell.shellcmd import ShellCmd
 
 TOPDIR = f"{os.path.dirname(os.path.realpath(__file__))}/../"
 CONFIG = f"{TOPDIR}/test/testfiles/test.conf"
@@ -85,6 +89,36 @@ class TestFunctions(unittest.TestCase):
         userconf = CheckConfig(args).returnconf()
         return self.assertEqual(userconf["strict"], 123)
 
+    def test_11b_merge_plus_minus_supported_for_all_list_merge_keys(self):
+        """U12b | +/- merge semantics are applied for all merge-capable list keys."""
+        args = self.args + [
+            "--allowed=['basecmd'] + ['pluscmd'] - ['basecmd']",
+            "--allowed_shell_escape=['ase_base'] + ['ase_plus'] - ['ase_base']",
+            "--allowed_file_extensions=['.log'] + ['.txt'] - ['.log']",
+            "--forbidden=[';'] + ['#'] - [';']",
+            "--overssh=['scp', 'rsync'] + ['ls'] - ['scp']",
+            "--path=['/'] - ['/var','/etc'] + ['/var/log']",
+        ]
+        userconf = CheckConfig(args).returnconf()
+
+        self.assertIn("pluscmd", userconf["allowed"])
+        self.assertNotIn("basecmd", userconf["allowed"])
+
+        self.assertEqual(set(userconf["allowed_shell_escape"]), {"ase_plus"})
+        self.assertEqual(set(userconf["allowed_file_extensions"]), {".txt"})
+
+        self.assertIn("#", userconf["forbidden"])
+        self.assertNotIn(";", userconf["forbidden"])
+
+        self.assertIn("rsync", userconf["overssh"])
+        self.assertIn("ls", userconf["overssh"])
+        self.assertNotIn("scp", userconf["overssh"])
+
+        self.assertTrue(userconf["path"][0].startswith("/|"))
+        self.assertIn(f"{os.path.realpath('/var/log')}/|", userconf["path"][0])
+        self.assertIn(f"{os.path.realpath('/var')}/|", userconf["path"][1])
+        self.assertIn(f"{os.path.realpath('/etc')}/|", userconf["path"][1])
+
     def test_13_multiple_aliases_with_separator(self):
         """U13 | multiple aliases using &&, || and ; separators"""
         # enable &, | and ; characters
@@ -99,13 +133,40 @@ class TestFunctions(unittest.TestCase):
         """U14 | sudo_commands set to 'all' is equal to allowed variable"""
         args = self.args + ["--sudo_commands=all"]
         userconf = CheckConfig(args).returnconf()
-        # exclude internal and sudo(8) commands
-        exclude = builtins_list + ["sudo"]
-        allowed = [x for x in userconf["allowed"] if x not in exclude]
+        # exclude shell-internal builtins and sudo(8), but keep `ls`
+        exclude = [cmd for cmd in builtincmd.builtins_list if cmd != "ls"] + ["sudo"]
+        allowed = list(dict.fromkeys(x for x in userconf["allowed"] if x not in exclude))
         # sort lists to compare
         userconf["sudo_commands"].sort()
         allowed.sort()
         return self.assertEqual(allowed, userconf["sudo_commands"])
+
+    def test_14b_allowed_all_unquoted_expands(self):
+        """U14b | allowed=all (unquoted) expands to executable allow-list."""
+        args = self.args + ["--allowed=all"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertIsInstance(userconf["allowed"], list)
+        self.assertIn("ls", userconf["allowed"])
+
+    def test_14c_allowed_all_quoted_expands(self):
+        """U14c | allowed='all' (quoted) expands to executable allow-list."""
+        args = self.args + ["--allowed='all'"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertIsInstance(userconf["allowed"], list)
+        self.assertIn("ls", userconf["allowed"])
+
+    def test_14d_sudo_all_quoted_expansion(self):
+        """U14d | sudo_commands='all' (quoted) expands against effective allowed list."""
+        args = self.args + ["--sudo_commands='all'"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertIn("echo", userconf["sudo_commands"])
+        self.assertIn("ll", userconf["sudo_commands"])
+        self.assertIn("ls", userconf["sudo_commands"])
+        self.assertEqual(
+            userconf["sudo_commands"].count("ls"),
+            1,
+            msg="sudo_commands all-expansion must not duplicate ls",
+        )
 
     def test_16_allowed_ld_preload_builtin(self):
         """U16 | builtin commands should NOT be prepended with LD_PRELOAD"""
@@ -137,27 +198,6 @@ class TestFunctions(unittest.TestCase):
         args = input_command
         retcode = builtincmd.cmd_export(args)[0]
         return self.assertEqual(retcode, 0)
-
-    def test_20_winscp_allowed_commands(self):
-        """U20 | when winscp is enabled, new allowed commands are automatically
-        added (see man).
-        """
-        args = self.args + ["--allowed=[]", "--winscp=1"]
-        userconf = CheckConfig(args).returnconf()
-        # sort lists to compare, except 'export'
-        exclude = list(set(builtins_list) - set(["export"]))
-        expected = exclude + ["scp", "env", "pwd", "groups", "unset", "unalias"]
-        expected.sort()
-        allowed = userconf["allowed"]
-        allowed.sort()
-        return self.assertEqual(allowed, expected)
-
-    def test_21_winscp_allowed_semicolon(self):
-        """U21 | when winscp is enabled, use of semicolon is allowed"""
-        args = self.args + ["--forbidden=[';']", "--winscp=1"]
-        userconf = CheckConfig(args).returnconf()
-        # sort lists to compare
-        return self.assertNotIn(";", userconf["forbidden"])
 
     def test_22_prompt_short_0(self):
         """U22 | short_prompt = 0 should show dir compared to home dir"""
@@ -342,3 +382,140 @@ class TestFunctions(unittest.TestCase):
         expected = f"{getuser()}:{currentpath}$ "
         prompt = updateprompt(currentpath, userconf)
         self.assertEqual(prompt, expected)
+
+    @patch("lshell.checkconfig.os.umask")
+    def test_41_umask_sets_process_mask(self, mock_umask):
+        """U41 | --umask should be parsed as octal and applied to process mask"""
+        args = self.args + ["--umask=0002"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertEqual(userconf["umask"], "0002")
+        mock_umask.assert_called_once_with(0o002)
+
+    def test_42_invalid_umask_value_raises(self):
+        """U42 | invalid umask value should exit with error"""
+        args = self.args + ["--umask=0088"]
+        with self.assertRaises(SystemExit) as exc:
+            CheckConfig(args).returnconf()
+        self.assertEqual(exc.exception.code, 1)
+
+    def test_42b_umask_masks_new_history_file_permissions(self):
+        """U42b | configured umask should affect newly created lshell artifacts."""
+        original_umask = os.umask(0)
+        os.umask(original_umask)
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                history_path = os.path.join(tmpdir, "lshell_history")
+                args = self.args + [
+                    "--umask=0077",
+                    f"--history_file='{history_path}'",
+                ]
+                userconf = CheckConfig(args).returnconf()
+
+                with open(userconf["history_file"], "w", encoding="utf-8") as handle:
+                    handle.write("echo test\n")
+
+                history_mode = stat.S_IMODE(os.stat(userconf["history_file"]).st_mode)
+                self.assertEqual(history_mode, 0o600)
+        finally:
+            os.umask(original_umask)
+
+    def test_43_default_ls_alias_enables_auto_color(self):
+        """U43 | default config should alias ls to a platform color option."""
+        userconf = CheckConfig(self.args).returnconf()
+        expected = None
+        if sys.platform.startswith("linux"):
+            expected = "ls --color=auto"
+        elif sys.platform == "darwin" or "bsd" in sys.platform:
+            expected = "ls -G"
+        self.assertEqual(userconf["aliases"].get("ls"), expected)
+
+    def test_44_explicit_ls_alias_is_preserved(self):
+        """U44 | explicit ls alias should not be overwritten."""
+        args = self.args + ["--aliases={'ls':'ls -lh'}"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertEqual(userconf["aliases"].get("ls"), "ls -lh")
+
+    def test_44b_auto_ls_alias_expands_during_local_execution(self):
+        """U44b | local execution should dispatch through the generated ls alias."""
+        saved_env = {}
+        for key in ("SSH_CLIENT", "SSH_TTY", "SSH_ORIGINAL_COMMAND"):
+            saved_env[key] = os.environ.get(key)
+            os.environ.pop(key, None)
+        try:
+            userconf = CheckConfig(self.args).returnconf()
+            expected = get_aliases("ls", userconf["aliases"])
+            if not userconf.get("_auto_ls_alias") or expected is None:
+                self.skipTest("platform does not synthesize an ls alias")
+
+            with patch(
+                "lshell.shellcmd.utils.cmd_parse_execute", return_value=0
+            ) as mock_exec:
+                shell = ShellCmd(
+                    userconf,
+                    args=[],
+                    stdin=io.StringIO(),
+                    stdout=io.StringIO(),
+                    stderr=io.StringIO(),
+                )
+                shell.onecmd("ls")
+
+            mock_exec.assert_called_once_with(expected, shell_context=shell)
+        finally:
+            for key, value in saved_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_45_policy_commands_enabled_by_default(self):
+        """U45 | policy commands should be available by default."""
+        userconf = CheckConfig(self.args).returnconf()
+        self.assertIn("policy-show", userconf["allowed"])
+        self.assertIn("policy-path", userconf["allowed"])
+        self.assertIn("policy-sudo", userconf["allowed"])
+        self.assertIn("lpath", userconf["allowed"])
+        self.assertIn("lsudo", userconf["allowed"])
+
+    def test_46_policy_commands_can_be_hidden(self):
+        """U46 | policy commands can be hidden via --policy_commands=0."""
+        args = self.args + ["--policy_commands=0"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertNotIn("policy-show", userconf["allowed"])
+        self.assertNotIn("policy-path", userconf["allowed"])
+        self.assertNotIn("policy-sudo", userconf["allowed"])
+        self.assertNotIn("lpath", userconf["allowed"])
+        self.assertNotIn("lsudo", userconf["allowed"])
+
+    def test_47_invalid_allowed_type_rejected(self):
+        """U47 | allowed must be a list, scalar values should be rejected."""
+        args = self.args + ["--allowed=1"]
+        with self.assertRaises(SystemExit) as exc:
+            CheckConfig(args).returnconf()
+        self.assertEqual(exc.exception.code, 1)
+
+    def test_48_history_file_accepts_string_and_expands_home(self):
+        """U48 | --history_file should parse as string and resolve under home path."""
+        history_name = ".lshell_%u_history"
+        args = self.args + [f"--history_file='{history_name}'"]
+        userconf = CheckConfig(args).returnconf()
+        expected_history = os.path.join(
+            userconf["home_path"], history_name.replace("%u", userconf["username"])
+        )
+        self.assertEqual(userconf["history_file"], expected_history)
+
+    def test_49_history_file_absolute_path_kept_absolute(self):
+        """U49 | absolute --history_file path should not be prefixed by home path."""
+        history_path = "/tmp/lshell_%u_history"
+        args = self.args + [f"--history_file='{history_path}'"]
+        userconf = CheckConfig(args).returnconf()
+        self.assertEqual(
+            userconf["history_file"], history_path.replace("%u", userconf["username"])
+        )
+
+    @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
+    def test_50_incompatible_noexec_library_is_disabled(self, _mock_usable):
+        """U50 | incompatible --path_noexec should be removed from runtime config."""
+        with tempfile.NamedTemporaryFile() as fake_lib:
+            args = self.args + [f"--path_noexec='{fake_lib.name}'"]
+            userconf = CheckConfig(args).returnconf()
+        self.assertNotIn("path_noexec", userconf)

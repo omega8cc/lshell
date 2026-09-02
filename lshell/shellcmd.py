@@ -1,4 +1,4 @@
-""" This module contains the main class of lshell, it is the class that is
+"""This module contains the main class of lshell, it is the class that is
 responsible for the command line interface. It inherits from the cmd.Cmd class
 from the Python standard library. It offers the default methods to add
 security checks, logging, etc.
@@ -15,8 +15,12 @@ import readline
 from lshell.checkconfig import CheckConfig
 from lshell import utils
 from lshell import builtincmd
+from lshell import messages
 from lshell import sec
 from lshell import completion
+from lshell import variables
+from lshell import policy as policy_mode
+from lshell import audit
 
 
 class ShellCmd(cmd.Cmd, object):
@@ -45,7 +49,6 @@ class ShellCmd(cmd.Cmd, object):
         else:
             self.stderr = stderr
 
-        self.args = args
         self.conf = userconf
         self.log = self.conf["logpath"]
         self.kill_jobs_at_exit = False
@@ -68,6 +71,7 @@ class ShellCmd(cmd.Cmd, object):
         # initialize cli variables
         self.g_cmd = g_cmd
         self.g_line = g_line
+        self.args = args
 
         # initialize return code
         self.retcode = 0
@@ -85,118 +89,32 @@ class ShellCmd(cmd.Cmd, object):
         added a do_uname in the ShellCmd class!
         """
 
-        # expand environment variables in command line
-        self.g_cmd = os.path.expandvars(self.g_cmd)
-        self.g_line = os.path.expandvars(self.g_line)
-        self.g_arg = os.path.expandvars(self.g_arg)
-
         # in case the configuration file has been modified, reload it
         if self.conf["config_mtime"] != os.path.getmtime(self.conf["configfile"]):
+            session_id = self.conf.get("session_id")
             self.conf = CheckConfig(
                 ["--config", self.conf["configfile"]], refresh=1
             ).returnconf()
+            if session_id:
+                self.conf["session_id"] = session_id
             self.conf["promptprint"] = utils.updateprompt(os.getcwd(), self.conf)
             self.log = self.conf["logpath"]
 
-        if self.g_cmd in ["quit", "exit", "EOF"]:
-            self.do_exit()
+        if self.conf["timer"] > 0:
+            self.mytimer(0)
 
-        # check that commands/chars present in line are allowed/secure
-        ret_check_secure, self.conf = sec.check_secure(
-            self.g_line, self.conf, strict=self.conf["strict"]
-        )
-        if ret_check_secure == 1:
-            # see http://tldp.org/LDP/abs/html/exitcodes.html
-            self.retcode = 126
-            return object.__getattribute__(self, attr)
+        # replace $? with the exit code
+        self.g_line = utils.replace_exit_code(self.g_line, self.retcode)
 
-        # check that path present in line are allowed/secure
-        ret_check_path, self.conf = sec.check_path(
-            self.g_line, self.conf, strict=self.conf["strict"]
-        )
-        if ret_check_path == 1:
-            # see http://tldp.org/LDP/abs/html/exitcodes.html
-            self.retcode = 126
-            # in case request was sent by WinSCP, return error code has to be
-            # sent via an specific echo command
-            if self.conf["winscp"] and re.search(
-                "WinSCP: this is end-of-file", self.g_line
-            ):
-                utils.exec_cmd(f'echo "WinSCP: this is end-of-file: {self.retcode}"')
-            return object.__getattribute__(self, attr)
-        if self.g_cmd in self.conf["allowed"] or self.g_line in self.conf["allowed"]:
-            if self.conf["timer"] > 0:
-                self.mytimer(0)
-            self.g_arg = re.sub("^~$|^~/", f"{self.conf['home_path']}/", self.g_arg)
-            self.g_arg = re.sub(" ~/", f" {self.conf['home_path']}/", self.g_arg)
+        if isinstance(self.conf["aliases"], dict):
+            self.g_line = utils.get_aliases(self.g_line, self.conf["aliases"])
 
-            # replace $? with the exit code
-            self.g_line = utils.replace_exit_code(self.g_line, self.retcode)
+        self.log.info(f'CMD: "{self.g_line}"')
 
-            if isinstance(self.conf["aliases"], dict):
-                self.g_line = utils.get_aliases(self.g_line, self.conf["aliases"])
+        self.retcode = utils.cmd_parse_execute(self.g_line, shell_context=self)
 
-            self.log.info(f'CMD: "{self.g_line}"')
-
-            if self.g_cmd == "cd":
-                # split cd <dir> and rest of command
-                cmd_split = re.split(r";|&&|&|\|\||\|", self.g_line, 1)
-                # in case the are commands following cd, first change the
-                # directory, then execute the command
-                if len(cmd_split) == 2:
-                    directory, command = cmd_split
-                    # only keep cd's argument
-                    directory = directory.split("cd", 1)[1].strip()
-                    # change directory then, if success, execute the rest of
-                    # the cmd line
-                    self.retcode, self.conf = builtincmd.cmd_cd(directory, self.conf)
-
-                    if self.retcode == 0:
-                        cmd_split = re.split(r";|&&|&|\|\||\|", command)
-                        for command in cmd_split:
-                            self.retcode = utils.cmd_parse_execute(
-                                command, shell_context=self
-                            )
-                else:
-                    # set directory to command line argument and change dir
-                    directory = self.g_arg
-                    self.retcode, self.conf = builtincmd.cmd_cd(directory, self.conf)
-
-            # built-in lpath function: list all allowed path
-            elif self.g_cmd == "lpath":
-                self.retcode = builtincmd.cmd_lpath(self.conf)
-            # built-in lsudo function: list all allowed sudo commands
-            elif self.g_cmd == "lsudo":
-                self.retcode = builtincmd.cmd_lsudo(self.conf)
-            # built-in history function: print command history
-            elif self.g_cmd == "history":
-                self.retcode = builtincmd.cmd_history(self.conf, self.log)
-            # built-in export function
-            elif self.g_cmd == "export":
-                self.retcode, var = builtincmd.cmd_export(self.g_line)
-                if self.retcode == 1:
-                    self.log.critical(f"** forbidden environment variable '{var}'")
-            elif self.g_cmd == "source":
-                self.retcode = builtincmd.cmd_source(self.g_arg)
-            elif self.g_cmd == "fg":
-                self.retcode = builtincmd.cmd_bg_fg(self.g_cmd, self.g_arg)
-            elif self.g_cmd == "bg":
-                self.retcode = builtincmd.cmd_bg_fg(self.g_cmd, self.g_arg)
-            elif self.g_cmd == "jobs":
-                self.retcode = builtincmd.cmd_jobs()
-            # case 'cd' is in an alias e.g. {'toto':'cd /var/tmp'}
-            elif self.g_line[0:2] == "cd":
-                self.g_cmd = self.g_line.split()[0]
-                directory = " ".join(self.g_line.split()[1:])
-                self.retcode, self.conf = builtincmd.cmd_cd(directory, self.conf)
-
-            else:
-                self.retcode = utils.cmd_parse_execute(self.g_line, shell_context=self)
-
-        elif self.g_cmd not in ["", "?", "help", None]:
-            self.log.warn(f'INFO: unknown syntax -> "{self.g_line}"')
-            self.stderr.write(f"*** unknown syntax: {self.g_cmd}\n")
         self.g_cmd, self.g_arg, self.g_line = ["", "", ""]
+
         if self.conf["timer"] > 0:
             self.mytimer(self.conf["timer"])
         return object.__getattribute__(self, attr)
@@ -206,31 +124,82 @@ class ShellCmd(cmd.Cmd, object):
         server. If this is the case, it checks if the user is allowed to use
         SCP or not, and    acts as requested. : )
         """
+        def _execute_trusted_ssh_protocol(trusted_protocol=False):
+            # Protocol commands are still validated in run_overssh, then
+            # executed through the regular command path so policy settings
+            # (path/sudo/allowed_cmd_path/env/umask) stay consistent.
+            return utils.cmd_parse_execute(
+                self.conf["ssh"],
+                shell_context=self,
+                trusted_protocol=trusted_protocol,
+            )
 
-        if "ssh" in self.conf:
-            if "SSH_CLIENT" in os.environ and "SSH_TTY" not in os.environ:
-                # check if sftp is requested and allowed
-                if "sftp-server" in self.conf["ssh"]:
-                    if self.conf["sftp"] == 1:
-                        self.log.error("SFTP connect")
-                        retcode = utils.cmd_parse_execute(
-                            self.conf["ssh"], shell_context=self
-                        )
-                        self.log.error("SFTP disconnect")
-                        sys.exit(retcode)
-                    else:
-                        self.log.error("*** forbidden SFTP connection")
-                        sys.exit(1)
+        def _validate_ssh_command(check_path=True):
+            ret_check_secure, self.conf = sec.check_secure(
+                self.conf["ssh"], self.conf, strict=1, ssh=1
+            )
+            if ret_check_secure:
+                self.ssh_warn("char/command over SSH", self.conf["ssh"])
 
+            if check_path:
                 ret_check_path, self.conf = sec.check_path(
-                    self.conf["ssh"], self.conf, ssh=1
+                    self.conf["ssh"], self.conf, strict=1, ssh=1
                 )
                 if ret_check_path == 1:
                     self.ssh_warn("path over SSH", self.conf["ssh"])
 
+        def _with_protocol_in_overssh(protocol_commands):
+            overssh = list(self.conf.get("overssh", []))
+            changed = False
+            for item in protocol_commands:
+                if item and item not in overssh:
+                    overssh.append(item)
+                    changed = True
+            if changed:
+                self.conf["overssh"] = overssh
+
+        def _aliases_for_ssh_command():
+            aliases = self.conf["aliases"]
+            if self.conf.get("_auto_ls_alias") and isinstance(aliases, dict):
+                aliases = dict(aliases)
+                aliases.pop("ls", None)
+            return aliases
+
+        if "ssh" in self.conf:
+            if "SSH_CLIENT" in os.environ and "SSH_TTY" not in os.environ:
+                # Apply aliases consistently for all SSH command paths.
+                self.conf["ssh"] = utils.get_aliases(
+                    self.conf["ssh"], _aliases_for_ssh_command()
+                ).strip()
+
+                # check if sftp is requested and allowed
+                if "sftp-server" in self.conf["ssh"]:
+                    if self.conf["sftp"] == 1:
+                        _with_protocol_in_overssh(
+                            variables.TRUSTED_SFTP_PROTOCOL_BINARIES
+                        )
+                        # sftp-server binary path may live outside restricted
+                        # user paths; keep command-level checks but skip path ACL.
+                        _validate_ssh_command(check_path=False)
+                        self.log.error("SFTP connect")
+                        retcode = _execute_trusted_ssh_protocol(trusted_protocol=True)
+                        self.log.error("SFTP disconnect")
+                        sys.exit(retcode)
+                    else:
+                        self.log.error("*** forbidden SFTP connection")
+                        audit.log_command_event(
+                            self.conf,
+                            self.conf["ssh"],
+                            allowed=False,
+                            reason="forbidden SFTP connection",
+                        )
+                        sys.exit(1)
+
                 # check if scp is requested and allowed
                 if self.conf["ssh"].startswith("scp "):
                     if self.conf["scp"] == 1 or "scp" in self.conf["overssh"]:
+                        _with_protocol_in_overssh(["scp"])
+
                         if " -f " in self.conf["ssh"]:
                             # case scp download is allowed
                             if self.conf["scp_download"]:
@@ -239,6 +208,12 @@ class ShellCmd(cmd.Cmd, object):
                             else:
                                 self.log.error(
                                     f'SCP: download forbidden: "{self.conf["ssh"]}"'
+                                )
+                                audit.log_command_event(
+                                    self.conf,
+                                    self.conf["ssh"],
+                                    allowed=False,
+                                    reason="forbidden SCP download",
                                 )
                                 sys.exit(1)
                         elif " -t " in self.conf["ssh"]:
@@ -261,10 +236,15 @@ class ShellCmd(cmd.Cmd, object):
                                 self.log.error(
                                     f'SCP: upload forbidden: "{self.conf["ssh"]}"'
                                 )
+                                audit.log_command_event(
+                                    self.conf,
+                                    self.conf["ssh"],
+                                    allowed=False,
+                                    reason="forbidden SCP upload",
+                                )
                                 sys.exit(1)
-                        retcode = utils.cmd_parse_execute(
-                            self.conf["ssh"], shell_context=self
-                        )
+                        _validate_ssh_command()
+                        retcode = _execute_trusted_ssh_protocol(trusted_protocol=False)
                         self.log.error("SCP disconnect")
                         sys.exit(retcode)
                     else:
@@ -272,19 +252,8 @@ class ShellCmd(cmd.Cmd, object):
 
                 # check if command is in allowed overssh commands
                 elif self.conf["ssh"]:
-                    # replace aliases
-                    self.conf["ssh"] = utils.get_aliases(
-                        self.conf["ssh"], self.conf["aliases"]
-                    )
-                    # if command is not "secure", exit
-                    ret_check_secure, self.conf = sec.check_secure(
-                        self.conf["ssh"], self.conf, strict=1, ssh=1
-                    )
-                    if ret_check_secure:
-                        self.ssh_warn("char/command over SSH", self.conf["ssh"])
-                        sys.exit(1)
-                    else:
-                        self.log.error(f'Over SSH: "{self.conf["ssh"]}"')
+                    _validate_ssh_command()
+                    self.log.error(f'Over SSH: "{self.conf["ssh"]}"')
                     # if command is "help"
                     if self.conf["ssh"] == "help":
                         self.do_help(None)
@@ -299,20 +268,60 @@ class ShellCmd(cmd.Cmd, object):
                 # else warn and log
                 else:
                     self.ssh_warn("command over SSH", self.conf["ssh"])
-
             else:
-                # case of shell escapes
-                self.ssh_warn("shell escape", self.conf["ssh"])
+                # case of local shell escapes (e.g. pager/editor invoking
+                # the login shell with -c). Validate against normal policy.
+                self.conf["ssh"] = utils.get_aliases(
+                    self.conf["ssh"], _aliases_for_ssh_command()
+                )
+                ret_check_secure, self.conf = sec.check_secure(
+                    self.conf["ssh"],
+                    self.conf,
+                    strict=self.conf["strict"],
+                )
+                if ret_check_secure:
+                    self.log.error(f'*** forbidden shell escape: "{self.conf["ssh"]}"')
+                    audit.log_command_event(
+                        self.conf,
+                        self.conf["ssh"],
+                        allowed=False,
+                        reason=audit.pop_decision_reason(
+                            self.conf, "forbidden shell escape"
+                        ),
+                    )
+                    sys.exit(1)
+
+                self.log.error(f'Shell escape: "{self.conf["ssh"]}"')
+                retcode = utils.cmd_parse_execute(
+                    self.conf["ssh"], shell_context=self
+                )
+                self.log.error("Exited")
+                sys.exit(retcode)
             return retcode
 
     def ssh_warn(self, message, command="", key=""):
         """log and warn if forbidden action over SSH"""
+        audit.log_command_event(
+            self.conf,
+            command,
+            allowed=False,
+            reason=f"forbidden over SSH: {message}",
+        )
         if key == "scp":
-            self.log.critical(f"*** forbidden {message}")
-            self.log.error(f"*** SCP command: {command}")
+            self.log.critical(
+                messages.get_message(self.conf, "forbidden_scp_over_ssh", message=message)
+            )
+            self.log.error(f"lshell: SCP command: {command}")
         else:
-            self.log.critical(f'*** forbidden {message}: "{command}"')
-        sys.stderr.write("This incident has been reported.\n")
+            self.log.critical(
+                messages.get_message(
+                    self.conf,
+                    "forbidden_command_over_ssh",
+                    message=message,
+                    command=command,
+                )
+            )
+        sys.stderr.write(messages.get_message(self.conf, "incident_reported") + "\n")
         self.log.error("Exited")
         sys.exit(1)
 
@@ -342,7 +351,6 @@ class ShellCmd(cmd.Cmd, object):
         if self.use_rawinput and self.completekey:
             try:
                 readline.read_history_file(self.conf["history_file"])
-                readline.set_history_length(self.conf["history_size"])
             except IOError:
                 # if history file does not exist
                 try:
@@ -350,6 +358,7 @@ class ShellCmd(cmd.Cmd, object):
                     readline.read_history_file(self.conf["history_file"])
                 except IOError:
                     pass
+            readline.set_history_length(self.conf["history_size"])
             readline.set_completer_delims(
                 readline.get_completer_delims().replace("-", "")
             )
@@ -369,58 +378,69 @@ class ShellCmd(cmd.Cmd, object):
             partial_line = ""
             stop = None
             while not stop:
-                # Check background jobs after each command
-                builtincmd.check_background_jobs()
-                if self.cmdqueue:
-                    line = self.cmdqueue.pop(0)
-                else:
-                    if self.use_rawinput:
-                        try:
-                            line = input(self.conf["promptprint"])
-                        except EOFError:
-                            line = "EOF"
-                        except KeyboardInterrupt:
-                            self.stdout.write("\n")
-                            if partial_line:
-                                partial_line = ""
-                                self.conf["promptprint"] = utils.updateprompt(
-                                    os.getcwd(), self.conf
-                                )
-                            continue
+                try:
+                    # Check background jobs after each command
+                    builtincmd.check_background_jobs()
+                    if self.cmdqueue:
+                        line = self.cmdqueue.pop(0)
                     else:
-                        self.stdout.write(self.conf["promptprint"])
-                        self.stdout.flush()
-                        line = self.stdin.readline()
-                        if not line:
-                            line = "EOF"
+                        if self.use_rawinput:
+                            try:
+                                line = input(self.conf["promptprint"])
+                            except EOFError:
+                                line = "EOF"
+                            except KeyboardInterrupt:
+                                self.stdout.write("\n")
+                                if partial_line:
+                                    partial_line = ""
+                                    self.conf["promptprint"] = utils.updateprompt(
+                                        os.getcwd(), self.conf
+                                    )
+                                continue
                         else:
-                            # chop \n
-                            line = line[:-1]
-                    if len(line) > 1 and line.startswith("\\"):
-                        # implying previous partial line
-                        line = line[:1].replace("\\", "", 1)
-                    if partial_line:
-                        line = partial_line + line
-                    if line.endswith("\\"):
-                        # continuation character. First partial line.
-                        # We shall expect the command to continue in
-                        # a new line. Change to bash like PS2 prompt to
-                        # indicate this continuation to the user
-                        partial_line = line.strip("\\")
-                        self.conf["promptprint"] = self.prompt2  # switching to PS2
-                        continue
-                    elif line.count('"') % 2 != 0 or line.count("'") % 2 != 0:
-                        # unclosed quotes detected
-                        partial_line = line
-                        self.conf["promptprint"] = self.prompt2  # switching to PS2
-                        continue
+                            self.stdout.write(self.conf["promptprint"])
+                            self.stdout.flush()
+                            line = self.stdin.readline()
+                            if not line:
+                                line = "EOF"
+                            else:
+                                # chop \n
+                                line = line[:-1]
+                        if len(line) > 1 and line.startswith("\\"):
+                            # implying previous partial line
+                            line = line[:1].replace("\\", "", 1)
+                        if partial_line:
+                            line = partial_line + line
+                        if line.endswith("\\"):
+                            # continuation character. First partial line.
+                            # We shall expect the command to continue in
+                            # a new line. Change to bash like PS2 prompt to
+                            # indicate this continuation to the user
+                            partial_line = line.strip("\\")
+                            self.conf["promptprint"] = self.prompt2  # switching to PS2
+                            continue
+                        elif line.count('"') % 2 != 0 or line.count("'") % 2 != 0:
+                            # unclosed quotes detected
+                            partial_line = line
+                            self.conf["promptprint"] = self.prompt2  # switching to PS2
+                            continue
+                        partial_line = ""
+                        self.conf["promptprint"] = utils.updateprompt(
+                            os.getcwd(), self.conf
+                        )
+                    line = self.precmd(line)
+                    stop = self.onecmd(line)
+                    stop = self.postcmd(stop, line)
+                except KeyboardInterrupt:
+                    # Keep prompt handling local to cmdloop even when Ctrl+C
+                    # races outside input() (e.g. background-job checks).
+                    self.stdout.write("\n")
+                    self.stdout.flush()
                     partial_line = ""
                     self.conf["promptprint"] = utils.updateprompt(
                         os.getcwd(), self.conf
                     )
-                line = self.precmd(line)
-                stop = self.onecmd(line)
-                stop = self.postcmd(stop, line)
+                    continue
             self.postloop()
         finally:
             if self.use_rawinput and self.completekey:
@@ -458,6 +478,9 @@ class ShellCmd(cmd.Cmd, object):
             # complete with directories
             elif command == "cd":
                 compfunc = completion.complete_change_dir
+            # complete local relative commands from allowed entries like ./foo
+            elif command.startswith("./"):
+                compfunc = completion.completenames
             # complete with files and directories
             elif (
                 len(line.split(" ")) > 1 and line.split(" ")[0] in self.conf["allowed"]
@@ -471,7 +494,11 @@ class ShellCmd(cmd.Cmd, object):
                     try:
                         compfunc = getattr(self, "complete_" + cmd)
                     except AttributeError:
-                        compfunc = completion.completedefault
+                        compfunc = (
+                            completion.completenames
+                            if cmd.startswith("./")
+                            else completion.completedefault
+                        )
                     # exception called when using './' completion
                     except IndexError:
                         compfunc = completion.completenames
@@ -543,6 +570,38 @@ class ShellCmd(cmd.Cmd, object):
         list_tmp = list(dict.fromkeys(self.completenames("", "")).keys())
         list_tmp.sort()
         self.columnize(list_tmp)
+
+    def do_EOF(self, arg=None):  # pylint: disable=invalid-name
+        """Handle Ctrl+D / EOF exactly like exit."""
+        return self.do_exit(arg)
+
+    def do_quit(self, arg=None):
+        """Handle quit exactly like exit."""
+        return self.do_exit(arg)
+
+    def do_policy_show(self, arg=None):
+        """Show resolved policy values and optional decision for a command."""
+        command_line = (arg or "").strip() or None
+        username = self.conf.get("username")
+        groups = policy_mode._resolve_user_groups(username, [])
+        try:
+            result = policy_mode.resolve_policy(
+                self.conf["configfile"],
+                username,
+                groups,
+            )
+        except ValueError as exception:
+            self.stderr.write(f"lshell: {exception}\n")
+            return 1
+
+        decision = None
+        if command_line:
+            decision = policy_mode.policy_command_decision(command_line, result["policy"])
+
+        policy_mode.print_user_view(result, command_line, decision)
+        if decision is None:
+            return 0
+        return 0 if decision["allowed"] else 2
 
     def do_exit(self, arg=None):
         """This method overrides the original do_exit method."""
