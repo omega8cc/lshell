@@ -419,6 +419,16 @@ class TestFunctions(unittest.TestCase):
         finally:
             os.umask(original_umask)
 
+    def test_42c_log_file_is_owner_only(self):
+        """U42c | the per-user log file is created 0600, never group-readable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = self.args + [f"--log={tmpdir}", "--loglevel=4"]
+            CheckConfig(args).returnconf()
+            logfile = os.path.join(tmpdir, getuser() + ".log")
+            self.assertTrue(os.path.exists(logfile))
+            log_mode = stat.S_IMODE(os.stat(logfile).st_mode)
+            self.assertEqual(log_mode, 0o600)
+
     def test_43_default_ls_alias_enables_auto_color(self):
         """U43 | default config should alias ls to a platform color option."""
         userconf = CheckConfig(self.args).returnconf()

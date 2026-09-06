@@ -280,9 +280,12 @@ class CheckConfig:
                     with open(logfile, "a", encoding="utf-8"):
                         pass
                     try:
-                        # Group-writable logs support shared operational access
-                        # when /var/log/lshell is managed with group ownership.
-                        os.chmod(logfile, 0o660)
+                        # Owner-only, as 0.10 did: the log holds every command
+                        # line the user typed, and the directory is shared by
+                        # every restricted user (its group is theirs), so a
+                        # group-readable log is readable by a neighbour whose
+                        # primary group matches. root reads it as root.
+                        os.chmod(logfile, 0o600)
                     except OSError:
                         pass
                     # set logging handler

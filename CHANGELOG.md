@@ -3,6 +3,9 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.4 (BOA fork, 2026-09-06)
+- Security: the per-user log file is created and kept `0600` (owner only), as 0.10 did. 0.11 set `0660` at every session start; with the log directory shared by every restricted user and the file's group being the user's primary group, a neighbour in the same group could read the whole command history for the window between a login and the next `0600` re-assertion.
+
 ### v0.11.3 (BOA fork, 2026-09-02)
 - Fix: symlink targets are resolved three levels inside each read-write root (was two), so a per-user drush extension farm at `~/.drush/usr/<tool>` pointing into the account tree keeps loading under Landlock (found on the first real-shell upgrade drill: drush8 failed to open a command file).
 
