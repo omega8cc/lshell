@@ -3,6 +3,9 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.5 (BOA fork, 2026-09-07)
+- Security: only a root-owned symlink inside a user's `path` root extends the Landlock read-write set. A link the user can create or move is ignored (owner and target are read from the one open link inode), the shared `landlock_rw` roots (`/tmp`, `/var/tmp`, `/dev`) are never scanned, configured roots are compared by their real paths, and a derived target that is `/`, a parent of a configured root, or a `landlock_ro` root or inside one is refused and logged. Before, any link in those places widened the confinement of every later shell session, up to a `/` rule that dissolved it, and a link into a read-only root silently turned it read-write.
+
 ### v0.11.4 (BOA fork, 2026-09-06)
 - Security: the per-user log file is created and kept `0600` (owner only), as 0.10 did. 0.11 set `0660` at every session start; with the log directory shared by every restricted user and the file's group being the user's primary group, a neighbour in the same group could read the whole command history for the window between a login and the next `0600` re-assertion.
 

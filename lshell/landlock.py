@@ -23,14 +23,22 @@ Configuration (all optional, see etc/lshell.conf):
                                   user is worse than the missing sandbox)
 
 The user's 'path' allow-list is the natural RW set: on BOA that is the
-account's own tree, its home and its gem/npm stores. Relocated stores
-reached through a symlink inside those roots are resolved and added, so a
-files/ link pointing at a mounted volume keeps working.
+account's own tree, its home and its gem/npm stores. A symlink inside those
+roots that the administrator placed (the link inode is owned by root) is
+resolved and its target added, so a relocated files/ store on a mounted
+volume and a root-made drush extension farm keep working. A link the user
+can create or move is never followed: it would let the user extend their
+own boundary, and a link to / would dissolve it. The shared landlock_rw
+roots (/tmp and friends) are never scanned for the same reason, and no
+derived target may be /, a parent of a configured root, or a read-only root
+or anything inside one: the read-only list is the administrator's statement
+and a link never overrides it.
 """
 
 import ctypes
 import ctypes.util
 import os
+import stat
 import struct
 
 LANDLOCK_CREATE_RULESET_VERSION = 1 << 0
@@ -129,12 +137,79 @@ def _split_path_acl(acl):
     return out
 
 
+_O_PATH = getattr(os, "O_PATH", None)
+
+
+def _uid_trusted(uid):
+    """Only root's links extend a user's boundary."""
+    return uid == 0
+
+
+def _link_target(path):
+    """Real target of a root-owned symlink at path, or None.
+
+    Ownership of the link inode, not of its target, is the discriminator: a
+    shell user cannot create a root-owned link, and moving one does not
+    change where it points. Where the platform allows it (O_PATH plus
+    readlinkat on the open link) owner and target are read from ONE open
+    inode, so a link swapped under the walk cannot pass the owner test with
+    another link's target.
+    """
+    text = None
+    if _O_PATH is not None:
+        try:
+            fd = os.open(path, _O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            return None
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISLNK(st.st_mode) or not _uid_trusted(st.st_uid):
+                return None
+            try:
+                text = os.readlink("", dir_fd=fd)
+            except (OSError, ValueError, TypeError):
+                text = None
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
+    if text is None:
+        try:
+            st = os.lstat(path)
+            if not stat.S_ISLNK(st.st_mode) or not _uid_trusted(st.st_uid):
+                return None
+            text = os.readlink(path)
+        except OSError:
+            return None
+    return os.path.realpath(os.path.join(os.path.dirname(path), text))
+
+
+def _widens(target, roots):
+    """True when target is / or a strict ancestor of any configured root."""
+    if target == "/":
+        return True
+    prefix = target.rstrip("/") + "/"
+    for root in roots:
+        if root.startswith(prefix):
+            return True
+    return False
+
+
+def _covered(target, roots):
+    """True when target is one of the roots or lies beneath one."""
+    for root in roots:
+        if target == root or target.startswith(root.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def _resolve_links_below(root, max_depth=3):
-    """Real targets of symlinks in the first levels of a root.
+    """Real targets of root-owned symlinks in the first levels of a root.
 
     Three levels: a relocated files store sits at <root>/static/files, and a
     per-user drush extension farm at <home>/.drush/usr/<tool>, each link
-    pointing outside the root. Deeper links are the user's own business.
+    pointing outside the root. Deeper links are the user's own business, and
+    so is any link the user owns: only a link root placed is followed.
     """
     found = []
     try:
@@ -152,7 +227,9 @@ def _resolve_links_below(root, max_depth=3):
             for entry in entries:
                 try:
                     if entry.is_symlink():
-                        target = os.path.realpath(entry.path)
+                        target = _link_target(entry.path)
+                        if target is None:
+                            continue
                         if os.path.isdir(target) and not target.startswith(root_real + "/") and target != root_real:
                             if target not in found:
                                 found.append(target)
@@ -163,31 +240,46 @@ def _resolve_links_below(root, max_depth=3):
     return found
 
 
-def build_rules(conf):
+def build_rules(conf, warn=None):
     """Return [(path, 'ro'|'rw'), ...] from the resolved configuration.
 
     RW: the user's 'path' allow-list (already realpath'd by lshell, home
-    included), landlock_rw, and the real targets of symlinks found up to three
-    levels inside each RW root. RO: landlock_ro. Paths that do not exist are
+    included), landlock_rw, and the real targets of root-owned symlinks found
+    up to three levels inside each 'path' root. A derived target that is /, a
+    parent of a configured root, or a read-only root or inside one is refused
+    (reported through warn); one already beneath an RW root is redundant. The
+    shared landlock_rw roots are never scanned. RO: landlock_ro. Configured
+    roots are compared by their real paths. Paths that do not exist are
     dropped, so a template can list every distro's layout at once.
     """
+    own = _split_path_acl(conf.get("path", ["", ""])[0])
     rw = []
-    for item in _split_path_acl(conf.get("path", ["", ""])[0]):
+    for item in own:
         if item not in rw:
             rw.append(item)
     for item in conf.get("landlock_rw", DEFAULT_RW) or []:
         item = str(item).rstrip("/") or "/"
         if item not in rw:
             rw.append(item)
-    for base in list(rw):
-        for target in _resolve_links_below(base):
-            if target not in rw:
-                rw.append(target)
     ro = []
     for item in conf.get("landlock_ro", DEFAULT_RO) or []:
         item = str(item).rstrip("/") or "/"
-        if item not in ro and item not in rw:
+        if item not in ro:
             ro.append(item)
+    rw_real = [os.path.realpath(p) for p in rw]
+    ro_real = [os.path.realpath(p) for p in ro]
+    derived = []
+    for base in own:
+        for target in _resolve_links_below(base):
+            if _covered(target, rw_real) or target in derived:
+                continue
+            if _widens(target, rw_real + ro_real) or _covered(target, ro_real):
+                if warn is not None:
+                    warn("Landlock: symlink target %s under %s would widen the boundary, ignored" % (target, base))
+                continue
+            derived.append(target)
+    rw.extend(derived)
+    ro = [item for item in ro if item not in rw]
     rules = [(p, "rw") for p in rw if os.path.isdir(p)]
     rules += [(p, "ro") for p in ro if os.path.isdir(p)]
     return rules

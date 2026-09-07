@@ -187,8 +187,16 @@ before exec and inherited by the whole process tree; it cannot be lifted,
 `landlock_exempt` (default `passwd`, `ping`: setuid tools lose their
 privilege under `no_new_privs`) and `sudo`/`su` run without it. On a kernel
 without Landlock commands run unconfined and the error is logged, unless
-`landlock_strict : 1` refuses the login. Check the effective rules with
-`policy-show` (they are derived from the same `path` merge).
+`landlock_strict : 1` refuses the login. `policy-show` lists the `path`
+merge the read-write set is derived from; the derived rules themselves are
+logged at login.
+
+Symlinks inside the user's `path` roots extend the read-write set only when
+root owns the link itself (a relocated files store, an administrator-placed
+tool farm); a link the user can create or move is ignored, the shared
+`landlock_rw` roots are never scanned, and a target that is `/`, a parent of
+a configured root, or a `landlock_ro` root or anything inside one is refused
+and logged.
 
 `exec_shell` (default `/bin/sh`) names the shell commands run through;
 upstream hardcodes `bash`, which bypasses a dispatcher installed as

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Build the BOA-fetched source tarball from the committed tree: dist/lshell-<version>.tar.gz
-# extracting to lshell-<version>/ (what _lshell_install_upgrade expects under /var/opt).
+# extracting to lshell-<version>/ (what _if_fix_lshell in BOA.sh.txt expects under /var/opt).
 # The version is read from lshell/variables.py; BOA pins the same string in
 # _LSHELL_VRN / _LSHELL_CHK_VRN. Publish to files.boa.io/dev/src by hand.
 set -e

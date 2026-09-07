@@ -892,7 +892,7 @@ class CheckConfig:
             self.conf["landlock"] = 0
             return
         self.conf["landlock_abi"] = abi
-        self.conf["landlock_rules"] = landlock.build_rules(self.conf)
+        self.conf["landlock_rules"] = landlock.build_rules(self.conf, self.log.warning)
         self.log.info(
             "Landlock: ABI %d, %d rw + %d ro roots"
             % (
