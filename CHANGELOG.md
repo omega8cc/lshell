@@ -3,6 +3,10 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.6 (BOA fork, 2026-09-07)
+- Fix: say what the noexec check actually decided. A box that ships `sudo_noexec.so` logged `disabling incompatible noexec library` followed by `noexec library not found` at every session -- both misleading: the library is present and working, and preloading it is refused only because 0.11 runs every command as `[exec_shell, "-c", cmd]`, so `LD_PRELOAD` lands on that shell and would stop it executing anything (measured on a BOA box: wget, openssl, grep, sed and find all exit 126). One accurate line is written instead, `not found` is kept for a library that really is absent, and the probe carries the reason it must keep executing a binary, with unit tests that fail if it is turned into a builtin probe.
+- Note: under 0.10 the preload was applied to the command process itself, so the noexec layer was real there. It is unavailable in the 0.11 execution model; confinement rests on Landlock, the allowed/forbidden lists and the dispatcher named by `exec_shell`.
+
 ### v0.11.5 (BOA fork, 2026-09-07)
 - Security: only a root-owned symlink inside a user's `path` root extends the Landlock read-write set. A link the user can create or move is ignored (owner and target are read from the one open link inode), the shared `landlock_rw` roots (`/tmp`, `/var/tmp`, `/dev`) are never scanned, configured roots are compared by their real paths, and a derived target that is `/`, a parent of a configured root, or a `landlock_ro` root or inside one is refused and logged. Before, any link in those places widened the confinement of every later shell session, up to a `/` rule that dissolved it, and a link into a read-only root silently turned it read-write.
 

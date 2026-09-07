@@ -28,7 +28,23 @@ class CheckConfig:
     """Check the configuration file."""
 
     def noexec_library_usable(self, path_noexec):
-        """Return True when a noexec library can be safely preloaded."""
+        """Return True when a noexec library can be preloaded on the shell.
+
+        Every command runs as ``[exec_shell, "-c", cmd]`` (utils.exec_cmd), so
+        LD_PRELOAD lands on that shell, not on the command. A noexec library
+        that does its job therefore stops the shell from exec'ing anything and
+        every command fails with 126 -- measured on a BOA box: wget, openssl,
+        grep, sed and find all "Permission denied", while a shell builtin
+        still ran. So this probe deliberately runs an EXEC and requires it to
+        succeed: it asks "can the shell still run commands with this object
+        preloaded", which is the only question this execution model allows.
+
+        Do not "fix" it into a builtin probe. It reads like an inverted test
+        (a working library is exactly what makes the exec fail), and it is
+        inverted for the 0.10 model, where the preload was applied to the
+        command process itself. Under the 0.11 shell-based path, accepting a
+        working library breaks every session.
+        """
         probe_env = dict(os.environ)
         probe_env["LD_PRELOAD"] = path_noexec
         probe_env.pop("BASH_ENV", None)
@@ -845,15 +861,25 @@ class CheckConfig:
                     break
 
         # in case the library was found, set the LD_PRELOAD aliases
+        noexec_unusable = False
         if self.conf.get("path_noexec") and not self.noexec_library_usable(
             self.conf["path_noexec"]
         ):
+            # The library is present and, as a rule, working: preloading it on
+            # the shell commands run through is what would break them. Say
+            # that, instead of blaming the library or claiming it is missing --
+            # an operator who reads "not found" on a box that ships the file
+            # goes looking for a packaging fault that is not there.
+            noexec_unusable = True
             self.log.error(
-                f"lshell: disabling incompatible noexec library: {self.conf['path_noexec']}"
+                "lshell: noexec library not preloaded: "
+                f"{self.conf['path_noexec']} would stop the shell commands run "
+                "through from executing them (LD_PRELOAD disabled for this "
+                "session)"
             )
             self.conf.pop("path_noexec", None)
 
-        if not self.conf.get("path_noexec"):
+        if not self.conf.get("path_noexec") and not noexec_unusable:
             # if sudo_noexec.so file is not found,  write error in log file,
             # but don't exit tp  prevent strict dependency on sudo noexec lib
             self.log.error("lshell: noexec library not found")

@@ -3,6 +3,7 @@
 import io
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -529,3 +530,59 @@ class TestFunctions(unittest.TestCase):
             args = self.args + [f"--path_noexec='{fake_lib.name}'"]
             userconf = CheckConfig(args).returnconf()
         self.assertNotIn("path_noexec", userconf)
+
+    def _probe_with(self, returncode):
+        """Run noexec_library_usable with a faked probe result."""
+        checker = CheckConfig(self.args)
+        completed = subprocess.CompletedProcess(
+            args=["bash", "-c", "/usr/bin/true"], returncode=returncode, stdout=None
+        )
+        with patch("lshell.checkconfig.subprocess.run", return_value=completed) as run:
+            usable = checker.noexec_library_usable("/usr/libexec/sudo/sudo_noexec.so")
+        return usable, run
+
+    def test_51_noexec_probe_must_execute_a_binary(self):
+        """U51 | the noexec probe must run an EXEC, not a builtin.
+
+        Commands run as [exec_shell, '-c', cmd], so LD_PRELOAD lands on that
+        shell: a library that blocks exec breaks every command. The probe has
+        to ask whether the shell can still execute, which only an exec answers.
+        A builtin probe accepts a working library and every session then fails.
+        """
+        _usable, run = self._probe_with(0)
+        probe_args = run.call_args.args[0]
+        self.assertEqual(probe_args[:2], ["bash", "-c"])
+        self.assertNotIn(probe_args[2], (":", "true"))
+        self.assertTrue(os.path.isabs(probe_args[2].split()[0]))
+
+    def test_52_noexec_library_blocking_exec_is_not_preloaded(self):
+        """U52 | a preload that makes the shell fail to exec must be dropped."""
+        usable, _run = self._probe_with(126)
+        self.assertFalse(usable)
+
+    def test_53_noexec_library_allowing_exec_is_kept(self):
+        """U53 | a preload the shell can still execute through is kept."""
+        usable, _run = self._probe_with(0)
+        self.assertTrue(usable)
+
+    def test_54_noexec_probe_survives_missing_shell(self):
+        """U54 | an OSError from the probe must not raise into the login path."""
+        checker = CheckConfig(self.args)
+        with patch("lshell.checkconfig.subprocess.run", side_effect=OSError):
+            self.assertFalse(checker.noexec_library_usable("/tmp/whatever.so"))
+
+    @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
+    def test_55_unusable_noexec_is_not_reported_as_missing(self, _mock_usable):
+        """U55 | a present-but-unusable library must not log "not found".
+
+        Both lines used to be written at every session on a box that ships the
+        library, sending operators after a packaging fault that is not there.
+        """
+        with tempfile.NamedTemporaryFile() as fake_lib:
+            args = self.args + [f"--path_noexec='{fake_lib.name}'"]
+            checker = CheckConfig(args)
+            with patch.object(checker, "log") as log:
+                checker.set_noexec()
+        messages = [str(call.args[0]) for call in log.error.call_args_list]
+        self.assertTrue(any("not preloaded" in message for message in messages))
+        self.assertFalse(any("not found" in message for message in messages))
