@@ -339,7 +339,11 @@ class CheckConfig:
 
         # get groups configuration if any.
         # for each group the user belongs to, check if specific configuration
-        # exists.  The primary group has the highest priority.
+        # exists. Sections are applied in the REVERSE of os.getgroups() order,
+        # and a later section overrides an earlier one, so on Linux (which
+        # returns the list ascending by gid) the group with the LOWEST gid is
+        # applied last and wins; the primary group has no special priority.
+        # The [<user>] section below is applied last of all.
         grplist = os.getgroups()
         grplist.reverse()
         for gid in grplist:
@@ -870,9 +874,10 @@ class CheckConfig:
                     break
 
         # The library that was found, kept apart from the preload decision
-        # below: a dispatcher named by exec_shell can apply it at the leaf
-        # (utils.exec_cmd hands it over as LSHELL_NOEXEC) even when it cannot
-        # be preloaded on the shell itself.
+        # below: utils.cmd_parse_execute writes it into the command line as a
+        # per-segment LD_PRELOAD= assignment prefix, which reaches the command
+        # itself through whatever shell runs the line, even when the library
+        # cannot be preloaded on that shell.
         if self.conf.get("path_noexec"):
             self.conf["noexec_library"] = self.conf["path_noexec"]
 
@@ -892,7 +897,7 @@ class CheckConfig:
                 f"a command with {self.conf['path_noexec']} preloaded, which is "
                 "what a working noexec library does to the shell commands run "
                 "through (LD_PRELOAD disabled for this session; the library is "
-                "handed to exec_shell as LSHELL_NOEXEC for the command itself)"
+                "applied per command as an LD_PRELOAD= prefix on the line)"
             )
             self.conf.pop("path_noexec", None)
 

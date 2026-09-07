@@ -631,57 +631,161 @@ class TestFunctions(unittest.TestCase):
         self.assertNotIn("path_noexec", userconf)
         self.assertEqual(userconf["noexec_library"], fake_lib.name)
 
-    @patch("lshell.utils.sec.check_forbidden_chars")
-    @patch("lshell.utils.sec.check_secure")
-    @patch("lshell.utils.sec.check_path")
-    @patch("lshell.utils.exec_cmd", return_value=0)
-    def test_59_non_escape_command_hands_the_library_over(
-        self, mock_exec, mock_path, mock_secure, mock_forbidden
-    ):
-        """U59 | a command outside allowed_shell_escape carries LSHELL_NOEXEC."""
+    def _noexec_run(self, line, mock_exec, conf_extra=None, trusted=False):
+        """Run one line through cmd_parse_execute with the policy checks
+        answered "allowed" and return the exact string handed to exec_cmd."""
         from lshell import utils
 
         conf = CheckConfig(
             self.args
-            + ["--allowed=['wget']", "--allowed_shell_escape=['composer']", "--forbidden=[]"]
+            + [
+                "--allowed=['wget','find','grep','true','drush8','composer','echo','cat','ping']",
+                "--allowed_shell_escape=['composer','drush8','true']",
+                "--forbidden=[]",
+            ]
         ).returnconf()
         conf.pop("path_noexec", None)
         conf["noexec_library"] = "/usr/libexec/sudo/sudo_noexec.so"
+        if conf_extra:
+            conf.update(conf_extra)
         shell = _NoexecShellContext(conf)
-        mock_forbidden.side_effect = lambda line, conf, strict=None: (0, conf)
-        mock_secure.side_effect = lambda line, conf, strict=None: (0, conf)
-        mock_path.side_effect = lambda line, conf, strict=None: (0, conf)
-        utils.cmd_parse_execute("wget --version", shell_context=shell)
+        allow = lambda line, conf, strict=None: (0, conf)
+        with patch("lshell.utils.sec.check_forbidden_chars", side_effect=allow), patch(
+            "lshell.utils.sec.check_secure", side_effect=allow
+        ), patch("lshell.utils.sec.check_path", side_effect=allow), patch(
+            "lshell.utils._command_exists", return_value=True
+        ), patch("lshell.utils.audit.log_command_event") as mock_audit:
+            utils.cmd_parse_execute(line, shell_context=shell, trusted_protocol=trusted)
         self.assertEqual(mock_exec.call_count, 1)
-        extra_env = mock_exec.call_args.kwargs.get("extra_env") or {}
-        self.assertEqual(extra_env.get("LSHELL_NOEXEC"), conf["noexec_library"])
-        self.assertNotIn("LD_PRELOAD", extra_env)
+        return mock_exec.call_args.args[0], mock_audit
 
-    @patch("lshell.utils.sec.check_forbidden_chars")
-    @patch("lshell.utils.sec.check_secure")
-    @patch("lshell.utils.sec.check_path")
+    _LIB = "LD_PRELOAD=/usr/libexec/sudo/sudo_noexec.so "
+
     @patch("lshell.utils.exec_cmd", return_value=0)
-    def test_60_shell_escape_command_never_carries_the_library(
-        self, mock_exec, mock_path, mock_secure, mock_forbidden
-    ):
-        """U60 | a command in allowed_shell_escape gets neither variable."""
+    def test_59_non_escape_command_is_prefixed_in_the_line(self, mock_exec):
+        """U59 | a command outside allowed_shell_escape gets the LD_PRELOAD= prefix.
+
+        The line that is audited stays the one typed; the mechanism lives only
+        in the string the shell runs. No environment variable is handed over.
+        """
+        line, mock_audit = self._noexec_run("wget --version", mock_exec)
+        self.assertEqual(line, self._LIB + "wget --version")
+        self.assertIsNone(mock_exec.call_args.kwargs.get("extra_env"))
+        audited = [c.args[1] for c in mock_audit.call_args_list if c.kwargs.get("allowed")]
+        self.assertEqual(audited, ["wget --version"])
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_60_shell_escape_command_is_left_as_typed(self, mock_exec):
+        """U60 | a command in allowed_shell_escape is handed over unchanged."""
+        line, _ = self._noexec_run("composer -V", mock_exec)
+        self.assertEqual(line, "composer -V")
+        self.assertIsNone(mock_exec.call_args.kwargs.get("extra_env"))
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_61_mixed_pipeline_prefixes_only_the_non_escape_segment(self, mock_exec):
+        """U61 | drush8 status | grep x: grep is preloaded, drush8 is not.
+
+        The 0.11.7 decision was per line, so this pipeline handed nothing over
+        and a plain `find ... | true` ran find unconfined. Per segment, the
+        shell-escape command keeps its freedom and the other one does not.
+        """
+        line, _ = self._noexec_run("drush8 status | grep x", mock_exec)
+        self.assertEqual(line, "drush8 status | " + self._LIB + "grep x")
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_62_piping_into_true_no_longer_disarms_find(self, mock_exec):
+        """U62 | the measured escape: find ... -exec ... | true keeps find preloaded."""
+        line, _ = self._noexec_run("find . -maxdepth 0 -exec echo X {} + | true", mock_exec)
+        self.assertEqual(line, self._LIB + "find . -maxdepth 0 -exec echo X {} + | true")
+        mock_exec.reset_mock()
+        line, _ = self._noexec_run("true | find . -exec echo X {} +", mock_exec)
+        self.assertEqual(line, "true | " + self._LIB + "find . -exec echo X {} +")
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_63_special_builtin_segment_is_never_prefixed(self, mock_exec):
+        """U63 | an assignment prefix on a special builtin persists: skip it."""
+        from lshell import utils
+
+        parts = ["export FOO=1", "cat x"]
+        parsed = [utils._parse_command(p) for p in parts]
+        line = utils.noexec_prefix_line(parts, parsed, set(), "/l.so")
+        self.assertEqual(line, "export FOO=1 | LD_PRELOAD=/l.so cat x")
+        parts = ["FOO=1", "cat x"]
+        parsed = [utils._parse_command(p) for p in parts]
+        line = utils.noexec_prefix_line(parts, parsed, set(), "/l.so")
+        self.assertEqual(line, "FOO=1 | LD_PRELOAD=/l.so cat x")
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_64_trusted_protocol_command_is_untouched(self, mock_exec):
+        """U64 | scp/sftp-server over SSH keep their byte stream exactly as validated."""
+        from lshell import variables
+
+        binary = list(variables.TRUSTED_SFTP_PROTOCOL_BINARIES)[0]
+        line, _ = self._noexec_run(f"{binary} -t /tmp", mock_exec, trusted=True)
+        self.assertEqual(line, f"{binary} -t /tmp")
+
+    def test_65_library_path_is_quoted_for_the_shell(self):
+        """U65 | a configured library path with shell metacharacters is quoted."""
+        from lshell import utils
+
+        parts = ["cat x"]
+        parsed = [utils._parse_command(p) for p in parts]
+        line = utils.noexec_prefix_line(parts, parsed, set(), "/opt/my lib/noexec.so")
+        self.assertEqual(line, "LD_PRELOAD='/opt/my lib/noexec.so' cat x")
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_66_a_typed_ld_preload_assignment_is_still_refused(self, mock_exec):
+        """U66 | the user cannot supply the prefix (or an empty one) themselves."""
         from lshell import utils
 
         conf = CheckConfig(
-            self.args
-            + ["--allowed=['wget']", "--allowed_shell_escape=['composer']", "--forbidden=[]"]
+            self.args + ["--allowed=['find']", "--forbidden=[]"]
         ).returnconf()
         conf["noexec_library"] = "/usr/libexec/sudo/sudo_noexec.so"
         shell = _NoexecShellContext(conf)
-        mock_forbidden.side_effect = lambda line, conf, strict=None: (0, conf)
-        mock_secure.side_effect = lambda line, conf, strict=None: (0, conf)
-        mock_path.side_effect = lambda line, conf, strict=None: (0, conf)
-        utils.cmd_parse_execute("composer -V", shell_context=shell)
-        self.assertEqual(mock_exec.call_count, 1)
-        self.assertIsNone(mock_exec.call_args.kwargs.get("extra_env"))
+        allow = lambda line, conf, strict=None: (0, conf)
+        with patch("lshell.utils.sec.check_forbidden_chars", side_effect=allow), patch(
+            "lshell.utils.audit.log_command_event"
+        ):
+            rc = utils.cmd_parse_execute("LD_PRELOAD= find . -exec echo X {} +", shell_context=shell)
+        self.assertEqual(rc, 126)
+        self.assertEqual(mock_exec.call_count, 0)
 
-    def test_61_inherited_lshell_noexec_is_dropped_at_launch(self):
-        """U61 | a value already in the environment never reaches a command."""
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_68_exempt_and_privileged_commands_are_never_prefixed(self, mock_exec):
+        """U68 | passwd/ping (landlock_exempt, setuid) and sudo/su keep their first word.
+
+        landlock.is_exempt and exec_cmd's sudo/su branch read the first word
+        of the line; a prefix there sandboxed ping (measured: "socktype:
+        SOCK_RAW" through a real session) and would send sudo through the
+        shell instead of the privileged path.
+        """
+        from lshell import utils
+
+        parts = ["ping -c 1 host", "cat x", "sudo -l", "/usr/bin/passwd"]
+        parsed = [utils._parse_command(p) for p in parts]
+        line = utils.noexec_prefix_line(parts, parsed, set(), "/l.so", exempt=["passwd", "ping"])
+        self.assertEqual(
+            line, "ping -c 1 host | LD_PRELOAD=/l.so cat x | sudo -l | /usr/bin/passwd"
+        )
+        line, _ = self._noexec_run(
+            "ping -c 1 host", mock_exec, conf_extra={"landlock_exempt": ["passwd", "ping"]}
+        )
+        self.assertEqual(line, "ping -c 1 host")
+
+    def test_69_is_exempt_skips_assignment_prefixes(self):
+        """U69 | LANG=C passwd is still the exempt setuid command."""
+        from lshell import landlock
+
+        conf = {"landlock_exempt": ["passwd", "ping"]}
+        self.assertTrue(landlock.is_exempt("LANG=C passwd", conf))
+        self.assertTrue(landlock.is_exempt("LD_PRELOAD=/l.so A_B=1 /usr/bin/ping -c 1 h", conf))
+        self.assertFalse(landlock.is_exempt("LANG=C composer install", conf))
+        self.assertFalse(landlock.is_exempt("LANG=C", conf))
+        self.assertFalse(landlock.is_exempt("=x passwd", conf))
+
+    def test_70_exec_cmd_decides_and_speaks_from_the_typed_line(self):
+        """U70 | only the argv carries the prefix; sudo/su, is_exempt and messages read the typed line."""
         from lshell import utils
 
         seen = {}
@@ -697,13 +801,78 @@ class TestFunctions(unittest.TestCase):
                 return 0
 
         def _fake_popen(cmd_args, **kwargs):
-            seen.update(kwargs.get("env") or {})
+            seen["argv"] = list(cmd_args)
+            seen["env"] = dict(kwargs.get("env") or {})
             return _FakeProc()
 
-        with patch.dict(os.environ, {"LSHELL_NOEXEC": "/tmp/planted.so"}):
-            with patch("lshell.utils.subprocess.Popen", side_effect=_fake_popen):
-                utils.exec_cmd("true", conf={"exec_shell": "/bin/sh"})
-        self.assertNotIn("LSHELL_NOEXEC", seen)
+        conf = {
+            "exec_shell": "/bin/sh",
+            "landlock": 1,
+            "landlock_rules": [("/tmp", "rw")],
+            "landlock_abi": 0,
+        }
+        with patch("lshell.utils.subprocess.Popen", side_effect=_fake_popen), patch(
+            "lshell.utils.landlock.is_exempt", return_value=False
+        ) as mock_exempt:
+            utils.exec_cmd(
+                "LD_PRELOAD=/l.so wget -q x", conf=conf, display="wget -q x"
+            )
+        self.assertEqual(seen["argv"], ["/bin/sh", "-c", "LD_PRELOAD=/l.so wget -q x"])
+        self.assertEqual(mock_exempt.call_args.args[0], "wget -q x")
+        # the layer lives in the argv and nowhere else: the child environment
+        # carries neither the old hand-over nor a whole-process preload
+        self.assertNotIn("LSHELL_NOEXEC", seen["env"])
+        self.assertNotIn("LD_PRELOAD", seen["env"])
+        # the privileged branch reads the typed line: a prefixed sudo would
+        # otherwise be handed to the shell instead of run directly
+        with patch("lshell.utils.subprocess.Popen", side_effect=_fake_popen), patch(
+            "lshell.utils.landlock.is_exempt", return_value=False
+        ):
+            utils.exec_cmd("sudo -l", conf=conf, display="sudo -l")
+        self.assertEqual(seen["argv"], ["sudo", "-l"])
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_71_a_shell_that_takes_the_preload_gets_the_environment_not_the_prefix(self, mock_exec):
+        """U71 | with path_noexec usable the upstream whole-line LD_PRELOAD applies, and no prefix."""
+        line, _ = self._noexec_run(
+            "wget --version", mock_exec, conf_extra={"path_noexec": "/usr/libexec/sudo/sudo_noexec.so"}
+        )
+        self.assertEqual(line, "wget --version")
+        self.assertEqual(
+            mock_exec.call_args.kwargs.get("extra_env"), {"LD_PRELOAD": "/usr/libexec/sudo/sudo_noexec.so"}
+        )
+        self.assertNotIn("display", mock_exec.call_args.kwargs)
+
+    def test_72_sftp_protocol_binary_is_never_prefixed(self):
+        """U72 | sftp-server keeps its byte stream on either dispatch path."""
+        from lshell import utils, variables
+
+        parts = ["/usr/lib/openssh/sftp-server", "cat x"]
+        parsed = [utils._parse_command(p) for p in parts]
+        line = utils.noexec_prefix_line(
+            parts, parsed, set(), "/l.so", exempt=list(variables.TRUSTED_SFTP_PROTOCOL_BINARIES)
+        )
+        self.assertEqual(line, "/usr/lib/openssh/sftp-server | LD_PRELOAD=/l.so cat x")
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_67_no_library_means_the_line_is_untouched(self, mock_exec):
+        """U67 | without a library nothing is written into the line."""
+        from lshell import utils
+
+        conf = CheckConfig(
+            self.args + ["--allowed=['wget']", "--allowed_shell_escape=[]", "--forbidden=[]"]
+        ).returnconf()
+        conf.pop("path_noexec", None)
+        conf.pop("noexec_library", None)
+        shell = _NoexecShellContext(conf)
+        allow = lambda line, conf, strict=None: (0, conf)
+        with patch("lshell.utils.sec.check_forbidden_chars", side_effect=allow), patch(
+            "lshell.utils.sec.check_secure", side_effect=allow
+        ), patch("lshell.utils.sec.check_path", side_effect=allow), patch(
+            "lshell.utils._command_exists", return_value=True
+        ), patch("lshell.utils.audit.log_command_event"):
+            utils.cmd_parse_execute("wget --version", shell_context=shell)
+        self.assertEqual(mock_exec.call_args.args[0], "wget --version")
 
     @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
     def test_55_unusable_noexec_is_not_reported_as_missing(self, _mock_usable):

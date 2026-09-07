@@ -285,16 +285,30 @@ def build_rules(conf, warn=None):
     return rules
 
 
-def is_exempt(cmd, conf):
-    """True when the command's executable name is on landlock_exempt."""
+def exempt_names(conf):
+    """The landlock_exempt list as strings (the default when unset or None)."""
     exempt = conf.get("landlock_exempt", DEFAULT_EXEMPT)
     if exempt is None:
         exempt = DEFAULT_EXEMPT
-    try:
-        first = str(cmd).strip().split()[0]
-    except IndexError:
+    return [str(e) for e in exempt]
+
+
+def is_exempt(cmd, conf):
+    """True when the command's executable name is on landlock_exempt.
+
+    Leading VAR=value words are skipped: they are assignment prefixes, not
+    the command, and a setuid tool behind one (``LANG=C passwd``) would
+    otherwise be sandboxed and fail to raise its privileges.
+    """
+    words = str(cmd).strip().split()
+    while words and "=" in words[0] and not words[0].startswith("="):
+        name = words[0].split("=", 1)[0]
+        if not name.replace("_", "a").isalnum() or name[0].isdigit():
+            break
+        words = words[1:]
+    if not words:
         return False
-    return os.path.basename(first) in [str(e) for e in exempt]
+    return os.path.basename(words[0]) in exempt_names(conf)
 
 
 def restrict(rules, abi):

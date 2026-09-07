@@ -462,6 +462,54 @@ def _parse_command(command):
     return executable, argument, split, assignments
 
 
+# POSIX special builtins: an assignment prefix on one of these PERSISTS in
+# the shell that ran it, so a segment led by one is never prefixed. A regular
+# builtin (echo, test, true, ...) gets the assignment for that one command
+# only, like any utility, and the value does nothing there.
+_POSIX_SPECIAL_BUILTINS = frozenset(
+    (":", ".", "break", "continue", "eval", "exec", "exit", "export",
+     "readonly", "return", "set", "shift", "times", "trap", "unset")
+)
+
+
+def noexec_prefix_line(pipeline_parts, parsed_parts, allowed_shell_escape, library, exempt=()):
+    """Return the pipeline with the noexec library applied per segment.
+
+    Every segment whose executable is outside allowed_shell_escape gets the
+    assignment prefix ``LD_PRELOAD=<library>``, which a POSIX shell applies to
+    that one command's environment and to nothing else on the line. A
+    segment led by an allowed_shell_escape command is handed over exactly as
+    typed, so ``drush status | grep x`` preloads grep and leaves drush free
+    to run php, and ``find ... -exec ... | true`` preloads find no matter
+    what it is piped into. The decision is per segment because a line-level
+    one (any segment shell-escape => nothing preloaded) let a tenant disarm
+    the layer for the whole line by piping into ``true`` (measured on a BOA
+    box, 2026-09-07); an environment variable cannot express per-segment
+    scope, so the mechanism lives in the line itself.
+
+    ``exempt`` names commands the prefix must leave alone: the setuid tools
+    on landlock_exempt (the loader ignores LD_PRELOAD for them anyway, and
+    landlock.is_exempt and exec_cmd's sudo/su branch read the segment's
+    first word) and sudo/su themselves.
+    """
+    prefix = "LD_PRELOAD=" + shlex.quote(library) + " "
+    untouched = set(allowed_shell_escape) | set(str(e) for e in exempt) | {"sudo", "su"}
+    rewritten = []
+    for (executable, _argument, _split, _assignments), part in zip(
+        parsed_parts, pipeline_parts
+    ):
+        if (
+            not executable
+            or executable in untouched
+            or os.path.basename(executable) in untouched
+            or executable in _POSIX_SPECIAL_BUILTINS
+        ):
+            rewritten.append(part)
+        else:
+            rewritten.append(prefix + part)
+    return " | ".join(rewritten)
+
+
 def _is_allowed_command(executable, command, conf):
     """Check command authorization from lshell config."""
     return executable in conf["allowed"] or command in conf["allowed"]
@@ -854,31 +902,46 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
                 for (executable_name, _, _, _) in parsed_parts
                 if executable_name
             )
-            if not uses_shell_escape:
-                if "path_noexec" in shell_context.conf:
+            exec_line = full_command
+            if "path_noexec" in shell_context.conf:
+                # the library can be preloaded on the shell itself (a plain
+                # exec_shell): the whole line gets it, as upstream does
+                if not uses_shell_escape:
                     extra_env = {"LD_PRELOAD": shell_context.conf["path_noexec"]}
+            elif shell_context.conf.get("noexec_library") and not skip_policy_checks:
                 # The shell the command runs through cannot take the preload
-                # itself (see CheckConfig.noexec_library_usable), so hand the
-                # library over in a variable of its own: a dispatcher that
-                # knows it (BOA's websh) applies LD_PRELOAD to the command it
-                # finally launches, and a plain shell ignores it. Shell-escape
-                # commands never carry it, by definition.
-                noexec_library = shell_context.conf.get("noexec_library")
-                if noexec_library:
-                    extra_env = dict(extra_env or {})
-                    extra_env["LSHELL_NOEXEC"] = noexec_library
+                # (see CheckConfig.noexec_library_usable), so the library is
+                # written into the line as an assignment prefix on each
+                # segment outside allowed_shell_escape: the shell applies it
+                # to that one command, whichever dispatcher sits in between.
+                # The line that is logged, audited, checked and shown stays
+                # the one typed (a user's own LD_PRELOAD= was refused above);
+                # the SFTP protocol binaries are never prefixed, on either
+                # dispatch path.
+                exec_line = noexec_prefix_line(
+                    pipeline_parts,
+                    parsed_parts,
+                    allowed_shell_escape,
+                    shell_context.conf["noexec_library"],
+                    exempt=list(landlock.exempt_names(shell_context.conf))
+                    + list(variables.TRUSTED_SFTP_PROTOCOL_BINARIES),
+                )
             audit.log_command_event(
                 shell_context.conf,
                 full_command,
                 allowed=True,
                 reason="allowed by command and path policy",
             )
+            exec_kwargs = {}
+            if exec_line != full_command:
+                exec_kwargs["display"] = full_command
             retcode = exec_cmd(
-                full_command,
+                exec_line,
                 background=background,
                 extra_env=extra_env,
                 conf=shell_context.conf,
                 log=shell_context.log,
+                **exec_kwargs,
             )
         else:
             retcode = _handle_unknown_syntax(full_command)
@@ -889,15 +952,18 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
     return retcode
 
 
-def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
-    """Execute a command exactly as entered, with support for backgrounding via Ctrl+Z."""
+def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display=None):
+    """Execute a command exactly as entered, with support for backgrounding via Ctrl+Z.
+
+    ``display`` is the line as the user typed it when ``cmd`` is a rewritten
+    form of it (the per-segment noexec prefix): every message, log line and
+    decision that reads the command as data (the sudo/su branch, the
+    landlock_exempt test) uses it, and only the shell gets ``cmd``.
+    """
     proc = None
+    shown = display if display is not None else cmd
     detached_session = True
     exec_env = dict(os.environ)
-    # Never inherited: only this launch decides whether the command's own
-    # process gets the noexec library (extra_env below), so a value set in the
-    # session cannot ride into a shell-escape command's children.
-    exec_env.pop("LSHELL_NOEXEC", None)
     runtime_limits = containment.get_runtime_limits(conf or {})
     command_timeout = runtime_limits.command_timeout
     unsupported_limits = containment.unsupported_rlimits(runtime_limits)
@@ -935,7 +1001,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
             else:
                 builtincmd.BACKGROUND_JOBS.append(proc)
                 job_id = len(builtincmd.BACKGROUND_JOBS)
-            sys.stdout.write(f"\n[{job_id}]+  Stopped        {cmd}\n")
+            sys.stdout.write(f"\n[{job_id}]+  Stopped        {shown}\n")
             sys.stdout.flush()
             raise CtrlZException()  # Raise custom exception for SIGTSTP handling
 
@@ -968,7 +1034,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
         if conf:
             audit.log_command_event(
                 conf,
-                cmd,
+                shown,
                 allowed=False,
                 reason=_timeout_reason(),
                 level="warning",
@@ -976,10 +1042,10 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
         if log:
             log.warning(
                 "lshell: runtime containment timed out command: "
-                f'timeout={command_timeout}s, command="{cmd}"'
+                f'timeout={command_timeout}s, command="{shown}"'
             )
         sys.stderr.write(
-            f"lshell: command timed out after {command_timeout}s: {cmd}\n"
+            f"lshell: command timed out after {command_timeout}s: {shown}\n"
         )
 
     previous_sigtstp_handler = signal.getsignal(signal.SIGTSTP)
@@ -997,7 +1063,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
         exec_shell = (conf or {}).get("exec_shell") or "/bin/sh"
         cmd_args = [exec_shell, "-c", cmd]
         try:
-            split_cmd = shlex.split(cmd, posix=True)
+            split_cmd = shlex.split(shown, posix=True)
         except ValueError:
             split_cmd = []
         privileged = bool(split_cmd) and split_cmd[0] in ("sudo", "su")
@@ -1019,7 +1085,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
             and landlock.enabled(conf)
             and sandbox_rules
             and not privileged
-            and not landlock.is_exempt(cmd, conf)
+            and not landlock.is_exempt(shown, conf)
         ):
             inner_preexec = preexec_fn
             sandbox_abi = conf.get("landlock_abi", 0)
@@ -1058,7 +1124,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
             # add to background jobs and return
             builtincmd.BACKGROUND_JOBS.append(proc)
             job_id = len(builtincmd.BACKGROUND_JOBS)
-            print(f"[{job_id}] {cmd} (pid: {proc.pid})")
+            print(f"[{job_id}] {shown} (pid: {proc.pid})")
             retcode = 0
         else:
             popen_kwargs = {"env": exec_env}
