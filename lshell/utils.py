@@ -854,8 +854,19 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
                 for (executable_name, _, _, _) in parsed_parts
                 if executable_name
             )
-            if "path_noexec" in shell_context.conf and not uses_shell_escape:
-                extra_env = {"LD_PRELOAD": shell_context.conf["path_noexec"]}
+            if not uses_shell_escape:
+                if "path_noexec" in shell_context.conf:
+                    extra_env = {"LD_PRELOAD": shell_context.conf["path_noexec"]}
+                # The shell the command runs through cannot take the preload
+                # itself (see CheckConfig.noexec_library_usable), so hand the
+                # library over in a variable of its own: a dispatcher that
+                # knows it (BOA's websh) applies LD_PRELOAD to the command it
+                # finally launches, and a plain shell ignores it. Shell-escape
+                # commands never carry it, by definition.
+                noexec_library = shell_context.conf.get("noexec_library")
+                if noexec_library:
+                    extra_env = dict(extra_env or {})
+                    extra_env["LSHELL_NOEXEC"] = noexec_library
             audit.log_command_event(
                 shell_context.conf,
                 full_command,
@@ -883,6 +894,10 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None):
     proc = None
     detached_session = True
     exec_env = dict(os.environ)
+    # Never inherited: only this launch decides whether the command's own
+    # process gets the noexec library (extra_env below), so a value set in the
+    # session cannot ride into a shell-escape command's children.
+    exec_env.pop("LSHELL_NOEXEC", None)
     runtime_limits = containment.get_runtime_limits(conf or {})
     command_timeout = runtime_limits.command_timeout
     unsupported_limits = containment.unsupported_rlimits(runtime_limits)

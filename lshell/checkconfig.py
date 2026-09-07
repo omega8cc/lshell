@@ -869,6 +869,13 @@ class CheckConfig:
                     self.conf["path_noexec"] = path_lib
                     break
 
+        # The library that was found, kept apart from the preload decision
+        # below: a dispatcher named by exec_shell can apply it at the leaf
+        # (utils.exec_cmd hands it over as LSHELL_NOEXEC) even when it cannot
+        # be preloaded on the shell itself.
+        if self.conf.get("path_noexec"):
+            self.conf["noexec_library"] = self.conf["path_noexec"]
+
         # in case the library was found, set the LD_PRELOAD aliases
         noexec_unusable = False
         if self.conf.get("path_noexec") and not self.noexec_library_usable(
@@ -884,7 +891,8 @@ class CheckConfig:
                 "lshell: noexec library not preloaded: the shell could not run "
                 f"a command with {self.conf['path_noexec']} preloaded, which is "
                 "what a working noexec library does to the shell commands run "
-                "through (LD_PRELOAD disabled for this session)"
+                "through (LD_PRELOAD disabled for this session; the library is "
+                "handed to exec_shell as LSHELL_NOEXEC for the command itself)"
             )
             self.conf.pop("path_noexec", None)
 

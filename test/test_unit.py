@@ -22,6 +22,27 @@ TOPDIR = f"{os.path.dirname(os.path.realpath(__file__))}/../"
 CONFIG = f"{TOPDIR}/test/testfiles/test.conf"
 
 
+class _NoexecLog:
+    """A logger that swallows everything."""
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: None
+
+
+class _NoexecShellContext:
+    """The minimum shell context cmd_parse_execute reads."""
+
+    def __init__(self, conf):
+        self.conf = conf
+        self.log = _NoexecLog()
+
+    def do_help(self, _arg):
+        return 0
+
+    def do_exit(self, _arg=None):
+        return 0
+
+
 class TestFunctions(unittest.TestCase):
     """Unit tests for lshell"""
 
@@ -596,6 +617,93 @@ class TestFunctions(unittest.TestCase):
         messages = [str(call.args[0]) for call in log.error.call_args_list]
         self.assertTrue(any("not found" in message for message in messages))
         self.assertFalse(any("not preloaded" in message for message in messages))
+
+    @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
+    def test_58_noexec_library_is_kept_for_the_dispatcher(self, _mock_usable):
+        """U58 | the library found is recorded even when it cannot be preloaded.
+
+        The shell cannot take the preload, but the dispatcher it names can
+        apply it to the command; the path must survive the probe's decision.
+        """
+        with tempfile.NamedTemporaryFile() as fake_lib:
+            args = self.args + [f"--path_noexec='{fake_lib.name}'"]
+            userconf = CheckConfig(args).returnconf()
+        self.assertNotIn("path_noexec", userconf)
+        self.assertEqual(userconf["noexec_library"], fake_lib.name)
+
+    @patch("lshell.utils.sec.check_forbidden_chars")
+    @patch("lshell.utils.sec.check_secure")
+    @patch("lshell.utils.sec.check_path")
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_59_non_escape_command_hands_the_library_over(
+        self, mock_exec, mock_path, mock_secure, mock_forbidden
+    ):
+        """U59 | a command outside allowed_shell_escape carries LSHELL_NOEXEC."""
+        from lshell import utils
+
+        conf = CheckConfig(
+            self.args
+            + ["--allowed=['wget']", "--allowed_shell_escape=['composer']", "--forbidden=[]"]
+        ).returnconf()
+        conf.pop("path_noexec", None)
+        conf["noexec_library"] = "/usr/libexec/sudo/sudo_noexec.so"
+        shell = _NoexecShellContext(conf)
+        mock_forbidden.side_effect = lambda line, conf, strict=None: (0, conf)
+        mock_secure.side_effect = lambda line, conf, strict=None: (0, conf)
+        mock_path.side_effect = lambda line, conf, strict=None: (0, conf)
+        utils.cmd_parse_execute("wget --version", shell_context=shell)
+        self.assertEqual(mock_exec.call_count, 1)
+        extra_env = mock_exec.call_args.kwargs.get("extra_env") or {}
+        self.assertEqual(extra_env.get("LSHELL_NOEXEC"), conf["noexec_library"])
+        self.assertNotIn("LD_PRELOAD", extra_env)
+
+    @patch("lshell.utils.sec.check_forbidden_chars")
+    @patch("lshell.utils.sec.check_secure")
+    @patch("lshell.utils.sec.check_path")
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_60_shell_escape_command_never_carries_the_library(
+        self, mock_exec, mock_path, mock_secure, mock_forbidden
+    ):
+        """U60 | a command in allowed_shell_escape gets neither variable."""
+        from lshell import utils
+
+        conf = CheckConfig(
+            self.args
+            + ["--allowed=['wget']", "--allowed_shell_escape=['composer']", "--forbidden=[]"]
+        ).returnconf()
+        conf["noexec_library"] = "/usr/libexec/sudo/sudo_noexec.so"
+        shell = _NoexecShellContext(conf)
+        mock_forbidden.side_effect = lambda line, conf, strict=None: (0, conf)
+        mock_secure.side_effect = lambda line, conf, strict=None: (0, conf)
+        mock_path.side_effect = lambda line, conf, strict=None: (0, conf)
+        utils.cmd_parse_execute("composer -V", shell_context=shell)
+        self.assertEqual(mock_exec.call_count, 1)
+        self.assertIsNone(mock_exec.call_args.kwargs.get("extra_env"))
+
+    def test_61_inherited_lshell_noexec_is_dropped_at_launch(self):
+        """U61 | a value already in the environment never reaches a command."""
+        from lshell import utils
+
+        seen = {}
+
+        class _FakeProc:
+            returncode = 0
+            pid = 1
+
+            def communicate(self, timeout=None):
+                return (b"", b"")
+
+            def poll(self):
+                return 0
+
+        def _fake_popen(cmd_args, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            return _FakeProc()
+
+        with patch.dict(os.environ, {"LSHELL_NOEXEC": "/tmp/planted.so"}):
+            with patch("lshell.utils.subprocess.Popen", side_effect=_fake_popen):
+                utils.exec_cmd("true", conf={"exec_shell": "/bin/sh"})
+        self.assertNotIn("LSHELL_NOEXEC", seen)
 
     @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
     def test_55_unusable_noexec_is_not_reported_as_missing(self, _mock_usable):
