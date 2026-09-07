@@ -194,6 +194,16 @@ while this should not be a common practice, setting this variable to an empty
 string will disable LD_PRELOAD prepend of the commands. This is done at your
 own risk, as lshell becomes easily breached using some commands like find(1)
 using the -exec flag.
+
+Since 0.11 every command runs through the shell named by exec_shell. When the
+library can be preloaded on that shell (a plain shell), the whole line gets it
+in the environment; when it cannot (a dispatcher that must itself exec, such
+as BOA's websh), the library is written into the line as an LD_PRELOAD=
+assignment prefix on every pipeline segment whose command is not in
+allowed_shell_escape, so the shell applies it to that one command only.
+Segments led by an allowed_shell_escape command, a landlock_exempt setuid
+tool, sudo/su, a POSIX special builtin or an SFTP protocol binary are never
+prefixed. The line that is logged and shown is the one typed.
 .SS [default] and/or [username] and/or [grp:groupname]
 .TP
 .I aliases
