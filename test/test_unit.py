@@ -525,7 +525,7 @@ class TestFunctions(unittest.TestCase):
 
     @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
     def test_50_incompatible_noexec_library_is_disabled(self, _mock_usable):
-        """U50 | incompatible --path_noexec should be removed from runtime config."""
+        """U50 | a --path_noexec the shell cannot execute through is dropped."""
         with tempfile.NamedTemporaryFile() as fake_lib:
             args = self.args + [f"--path_noexec='{fake_lib.name}'"]
             userconf = CheckConfig(args).returnconf()
@@ -570,6 +570,32 @@ class TestFunctions(unittest.TestCase):
         checker = CheckConfig(self.args)
         with patch("lshell.checkconfig.subprocess.run", side_effect=OSError):
             self.assertFalse(checker.noexec_library_usable("/tmp/whatever.so"))
+
+    def test_56_empty_path_noexec_keeps_shell_escape_commands(self):
+        """U56 | disabling LD_PRELOAD must not drop allowed_shell_escape.
+
+        The early return for an empty path_noexec skipped the merge at the end
+        of set_noexec, so the documented way to switch the preload off also
+        made every shell-escape command "forbidden".
+        """
+        args = self.args + [
+            "--allowed=['echo']",
+            "--allowed_shell_escape=['composer']",
+            "--path_noexec=''",
+        ]
+        userconf = CheckConfig(args).returnconf()
+        self.assertIn("composer", userconf["allowed"])
+        self.assertNotIn("path_noexec", userconf)
+
+    def test_57_missing_library_is_still_reported_as_not_found(self):
+        """U57 | a box with no noexec library anywhere still says "not found"."""
+        checker = CheckConfig(self.args)
+        with patch("lshell.checkconfig.os.path.exists", return_value=False):
+            with patch.object(checker, "log") as log:
+                checker.set_noexec()
+        messages = [str(call.args[0]) for call in log.error.call_args_list]
+        self.assertTrue(any("not found" in message for message in messages))
+        self.assertFalse(any("not preloaded" in message for message in messages))
 
     @patch("lshell.checkconfig.CheckConfig.noexec_library_usable", return_value=False)
     def test_55_unusable_noexec_is_not_reported_as_missing(self, _mock_usable):

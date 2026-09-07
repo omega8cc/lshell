@@ -5,6 +5,7 @@ Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)
 
 ### v0.11.6 (BOA fork, 2026-09-07)
 - Fix: say what the noexec check actually decided. A box that ships `sudo_noexec.so` logged `disabling incompatible noexec library` followed by `noexec library not found` at every session -- both misleading: the library is present and working, and preloading it is refused only because 0.11 runs every command as `[exec_shell, "-c", cmd]`, so `LD_PRELOAD` lands on that shell and would stop it executing anything (measured on a BOA box: wget, openssl, grep, sed and find all exit 126). One accurate line is written instead, `not found` is kept for a library that really is absent, and the probe carries the reason it must keep executing a binary, with unit tests that fail if it is turned into a builtin probe.
+- Fix: `path_noexec : ''`, the documented way to switch `LD_PRELOAD` off, silently made every `allowed_shell_escape` command forbidden (the early return skipped the merge that folds that list into `allowed`) and left an empty `path_noexec` in the runtime config, which `utils.exec_cmd` reads as "preload configured" and turns into `LD_PRELOAD=` on every command. The list is merged and the key dropped.
 - Note: under 0.10 the preload was applied to the command process itself, so the noexec layer was real there. It is unavailable in the 0.11 execution model; confinement rests on Landlock, the allowed/forbidden lists and the dispatcher named by `exec_shell`.
 
 ### v0.11.5 (BOA fork, 2026-09-07)

@@ -846,6 +846,15 @@ class CheckConfig:
             # if path_noexec is empty, disable LD_PRELOAD
             # /!\ this feature should be used at the administrator's own risks!
             if self.conf["path_noexec"] == "":
+                # Two bugs on the documented way to switch LD_PRELOAD off.
+                # Returning here skipped the allowed_shell_escape merge at the
+                # end of this method, so disabling the preload also removed
+                # every shell-escape command from the allowed list and the user
+                # was told "forbidden command"; and the empty key stayed in the
+                # config, which utils.exec_cmd reads as "preload configured"
+                # and turns into LD_PRELOAD= on every command.
+                self.conf["allowed"] += self.conf["allowed_shell_escape"]
+                self.conf.pop("path_noexec", None)
                 return
             if not os.path.exists(self.conf["path_noexec"]):
                 self.log.critical(
@@ -872,10 +881,10 @@ class CheckConfig:
             # goes looking for a packaging fault that is not there.
             noexec_unusable = True
             self.log.error(
-                "lshell: noexec library not preloaded: "
-                f"{self.conf['path_noexec']} would stop the shell commands run "
-                "through from executing them (LD_PRELOAD disabled for this "
-                "session)"
+                "lshell: noexec library not preloaded: the shell could not run "
+                f"a command with {self.conf['path_noexec']} preloaded, which is "
+                "what a working noexec library does to the shell commands run "
+                "through (LD_PRELOAD disabled for this session)"
             )
             self.conf.pop("path_noexec", None)
 
