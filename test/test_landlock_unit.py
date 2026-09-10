@@ -38,6 +38,13 @@ class TestLandlockRules(unittest.TestCase):
         self.assertTrue(landlock.is_exempt("/usr/bin/ping -c 1 host", conf))
         self.assertFalse(landlock.is_exempt("composer install", conf))
         self.assertFalse(landlock.is_exempt("", conf))
+        # the decision is for the whole line: one exempt segment does not
+        # lift the ruleset off the rest
+        self.assertTrue(landlock.is_exempt("LANG=C passwd", conf))
+        self.assertFalse(landlock.is_exempt("ping -c 1 host | composer install", conf))
+        self.assertFalse(landlock.is_exempt("passwd; find /data -type f", conf))
+        self.assertFalse(landlock.is_exempt("ping -c 1 host && composer install", conf))
+        self.assertTrue(landlock.is_exempt("ping -c 1 host | ping -c 1 host", conf))
         self.assertTrue(landlock.is_exempt("passwd", {}))
 
     def test_enabled_and_strict_parse(self):

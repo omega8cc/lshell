@@ -384,6 +384,9 @@ class CheckConfig:
                     "allowed_shell_escape",
                     "allowed_file_extensions",
                     "forbidden",
+                    "landlock_ro",
+                    "landlock_rw",
+                    "landlock_exempt",
                 ]:
                     for stuff in split:
                         if not stuff.strip():

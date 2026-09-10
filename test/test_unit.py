@@ -232,8 +232,8 @@ class TestFunctions(unittest.TestCase):
         return self.assertEqual(prompt, expected)
 
     def test_23_prompt_short_1(self):
-        """U23 | short_prompt = 1 should show only current dir"""
-        expected = f"{getuser()}:foo$ "
+        """U23 | short_prompt = 1 should show only current dir (BOA: bracketed)"""
+        expected = f"{getuser()}:[foo]$ "
         args = self.args + ["--prompt_short=1"]
         userconf = CheckConfig(args).returnconf()
         currentpath = f"{userconf['home_path']}/foo"
@@ -243,10 +243,10 @@ class TestFunctions(unittest.TestCase):
 
     def test_24_prompt_short_2(self):
         """U24 | short_prompt = 2 should show full dir path"""
-        expected = f"{getuser()}:{os.getcwd()}/foo$ "
         args = self.args + ["--prompt_short=2"]
         userconf = CheckConfig(args).returnconf()
         currentpath = f"{userconf['home_path']}/foo"
+        expected = f"{getuser()}:{currentpath}$ "
         prompt = updateprompt(currentpath, userconf)
         # sort lists to compare
         return self.assertEqual(prompt, expected)
@@ -372,11 +372,11 @@ class TestFunctions(unittest.TestCase):
         self.assertEqual(prompt, expected)
 
     def test_37_updateprompt_short_prompt_level_1(self):
-        """U37 | short_prompt = 1 should show only last directory in path"""
+        """U37 | short_prompt = 1 should show only last directory in path (BOA: bracketed)"""
         userconf = CheckConfig(self.args).returnconf()
         userconf["prompt_short"] = 1
         currentpath = f"{userconf['home_path']}/foo/bar"
-        expected = f"{getuser()}:bar$ "
+        expected = f"{getuser()}:[bar]$ "
         prompt = updateprompt(currentpath, userconf)
         self.assertEqual(prompt, expected)
 

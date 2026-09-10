@@ -192,8 +192,8 @@ be preloaded on the `exec_shell` itself, so an allowed command outside
 privilege under `no_new_privs`) and `sudo`/`su` run without it. On a kernel
 without Landlock commands run unconfined and the error is logged, unless
 `landlock_strict : 1` refuses the login. `policy-show` lists the `path`
-merge the read-write set is derived from; the derived rules themselves are
-logged at login.
+merge the read-write set is derived from; the rule counts are logged at
+login, and a symlink target the rule set refused is logged as a warning.
 
 Symlinks inside the user's `path` roots extend the read-write set only when
 root owns the link itself (a relocated files store, an administrator-placed

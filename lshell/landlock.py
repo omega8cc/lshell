@@ -38,6 +38,7 @@ and a link never overrides it.
 import ctypes
 import ctypes.util
 import os
+import re
 import stat
 import struct
 
@@ -293,22 +294,45 @@ def exempt_names(conf):
     return [str(e) for e in exempt]
 
 
-def is_exempt(cmd, conf):
-    """True when the command's executable name is on landlock_exempt.
+def _segment_command(segment):
+    """The executable name of one pipeline segment, or None.
 
     Leading VAR=value words are skipped: they are assignment prefixes, not
     the command, and a setuid tool behind one (``LANG=C passwd``) would
     otherwise be sandboxed and fail to raise its privileges.
     """
-    words = str(cmd).strip().split()
+    words = str(segment).strip().split()
     while words and "=" in words[0] and not words[0].startswith("="):
         name = words[0].split("=", 1)[0]
         if not name.replace("_", "a").isalnum() or name[0].isdigit():
             break
         words = words[1:]
     if not words:
+        return None
+    return os.path.basename(words[0])
+
+
+def is_exempt(cmd, conf):
+    """True when EVERY command of the line is on landlock_exempt.
+
+    The line runs as one shell child, and the ruleset is applied to that
+    child, so the decision is for the whole line: with the first segment
+    alone deciding, ``ping -c1 h | composer install`` ran composer and every
+    process it spawned with no Landlock ruleset at all (the same line-level
+    hole 0.11.8 closed for the noexec layer). A pipeline is exempt only when
+    each of its segments is; in practice, a single exempt command.
+    """
+    names = exempt_names(conf)
+    if not names:
         return False
-    return os.path.basename(words[0]) in exempt_names(conf)
+    segments = [s for s in re.split(r"\|\|?|&&|;", str(cmd)) if s.strip()]
+    if not segments:
+        return False
+    for segment in segments:
+        name = _segment_command(segment)
+        if name is None or name not in names:
+            return False
+    return True
 
 
 def restrict(rules, abi):

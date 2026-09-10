@@ -1107,7 +1107,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
                 if preexec_fn is not None:
                     popen_kwargs["preexec_fn"] = preexec_fn
                 proc = subprocess.Popen(cmd_args, **popen_kwargs)
-            proc.lshell_cmd = cmd
+            proc.lshell_cmd = shown
             proc.lshell_timeout_timer = None
             if command_timeout > 0:
 
@@ -1131,7 +1131,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
             if preexec_fn is not None:
                 popen_kwargs["preexec_fn"] = preexec_fn
             proc = subprocess.Popen(cmd_args, **popen_kwargs)
-            proc.lshell_cmd = cmd
+            proc.lshell_cmd = shown
             if command_timeout > 0:
                 proc.communicate(timeout=command_timeout)
             else:
@@ -1149,7 +1149,11 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
             proc.communicate()
         _emit_timeout_event()
         retcode = 124
-    except subprocess.SubprocessError as exception:
+    except (subprocess.SubprocessError, OSError) as exception:
+        # OSError: a preexec_fn failure is re-raised in the parent with the
+        # child's own exception type, so a kernel refusal of the Landlock
+        # ruleset (landlock.restrict raises OSError) arrived here as neither
+        # FileNotFoundError nor SubprocessError and ended the session.
         reason = containment.reason_with_details(
             "runtime_limit.preexec_application_failed",
             error=str(exception),
@@ -1157,7 +1161,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
         if conf:
             audit.log_command_event(
                 conf,
-                cmd,
+                shown,
                 allowed=False,
                 reason=reason,
                 level="warning",
@@ -1244,6 +1248,10 @@ def updateprompt(path, conf):
     # get initial promptbase (from configuration)
     promptbase = getpromptbase(conf)
 
+    # $LPS1 is the whole prompt (man page, sample config): no path suffix.
+    if os.getenv("LPS1"):
+        return promptbase
+
     # update the prompt when directory is changed
     if path == conf['home_path']:
         prompt = '%s:~$ ' % promptbase
@@ -1257,7 +1265,7 @@ def updateprompt(path, conf):
             prompt = '%s:[%s]$ ' % (promptbase,
                                     path.split('/')[-1])
     elif conf['prompt_short'] == 2:
-        prompt = '%s: %s$ ' % (promptbase, os.getcwd())
+        prompt = '%s:%s$ ' % (promptbase, path)
     elif re.findall(conf['home_path'], path):
         prompt = '%s:~%s$ ' % (promptbase,
                                path.split(conf['home_path'])[1])
