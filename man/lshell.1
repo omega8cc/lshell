@@ -203,7 +203,9 @@ assignment prefix on every pipeline segment whose command is not in
 allowed_shell_escape, so the shell applies it to that one command only.
 Segments led by an allowed_shell_escape command, a landlock_exempt setuid
 tool, sudo/su, a POSIX special builtin or an SFTP protocol binary are never
-prefixed. The line that is logged and shown is the one typed.
+prefixed. The line that is logged and shown is the one typed. A segment that
+holds more than one command once its variables are expanded is refused, since
+a POSIX shell never reads an operator out of a value.
 .SS [default] and/or [username] and/or [grp:groupname]
 .TP
 .I aliases

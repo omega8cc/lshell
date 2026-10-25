@@ -3,6 +3,9 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.10 (BOA fork, 2026-10-25)
+- Security: a pipeline segment that holds more than one command once its variables are expanded is refused. Variables are expanded per segment after the line is split, and the expanded line is handed to the shell as text, so a list operator inside a value became a second command in that segment; the noexec prefix and the per-segment decisions read only the first. A POSIX shell never reads an operator out of a value, so no shell-valid line loses anything; a quoted reference (`"$V"`) stays one argument and runs as before.
+
 ### v0.11.9 (BOA fork, 2026-09-10)
 - Security: the Landlock exemption is decided for the whole line. `is_exempt` read the first word of the joined pipeline, so `ping -c 1 host | composer install` (both `passwd` and `ping` are exempt setuid tools in BOA's config, `|` is not forbidden) ran composer and every process it spawned with no ruleset at all, the same line-level hole 0.11.8 closed for the noexec layer. A line is exempt only when every one of its segments is; in practice a single exempt command.
 - A kernel refusal of the ruleset at exec time (`landlock.restrict` raises `OSError` inside `preexec_fn`, re-raised in the parent with the child's own type) is handled like every other containment failure (denied, exit 126) instead of ending the session with a traceback.

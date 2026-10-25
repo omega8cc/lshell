@@ -854,6 +854,78 @@ class TestFunctions(unittest.TestCase):
         )
         self.assertEqual(line, "/usr/lib/openssh/sftp-server | LD_PRELOAD=/l.so cat x")
 
+    _EXPANDED_VALUES = (
+        "x && wget -q y",
+        "x || wget -q y",
+        "x | wget -q y",
+        "x & wget -q y",
+        "x&&wget -q y",
+    )
+
+    def _assert_every_command_prefixed(self, exec_line, untouched):
+        """Each command the shell runs from exec_line carries the prefix."""
+        from lshell import utils
+
+        sequence = utils.split_command_sequence(exec_line)
+        self.assertIsNotNone(sequence, exec_line)
+        for item in sequence:
+            if item in {"&&", "||", "|", ";", "&"}:
+                continue
+            executable, _, _, assignments = utils._parse_command(item)
+            if "LD_PRELOAD" in [name for name, _value in assignments]:
+                continue
+            self.assertIn(executable, untouched, f"{item!r} in {exec_line!r}")
+
+    @patch("lshell.utils.exec_cmd", return_value=0)
+    def test_73_expanded_variable_cannot_add_an_unprefixed_command(self, mock_exec):
+        """U73 | after expansion, every command a segment holds is preloaded or refused.
+
+        Variables are expanded per segment at execution time, after the line
+        was split. The real policy checks run, with chaining allowed as on a
+        BOA box.
+        """
+        from lshell import utils
+
+        def run(env, line):
+            mock_exec.reset_mock()
+            conf = CheckConfig(
+                self.args
+                + [
+                    "--allowed=['cat','echo','wget','composer','true']",
+                    "--allowed_shell_escape=['composer','true']",
+                    "--forbidden=[';','`','$(','${']",
+                    "--warning_counter=100",
+                ]
+            ).returnconf()
+            conf.pop("path_noexec", None)
+            conf["noexec_library"] = "/usr/libexec/sudo/sudo_noexec.so"
+            shell = _NoexecShellContext(conf)
+            with patch.dict(os.environ, env), patch(
+                "lshell.utils._command_exists", return_value=True
+            ), patch("lshell.utils.audit.log_command_event"):
+                if not env:
+                    os.environ.pop("V", None)
+                return utils.cmd_parse_execute(line, shell_context=shell)
+
+        untouched = {"composer", "true"}
+        lines = []
+        for value in self._EXPANDED_VALUES:
+            lines.append(({"V": value}, "cat $V"))
+            lines.append(({"V": value}, "echo a | cat $V"))
+            lines.append(({"V": value}, "true $V"))
+            lines.append(({}, f"V='{value}' && cat $V"))
+        for env, line in lines:
+            with self.subTest(line=line, env=env):
+                run(env, line)
+                for call in mock_exec.call_args_list:
+                    self._assert_every_command_prefixed(call.args[0], untouched)
+
+        # a value that stays one command still runs, preloaded
+        self.assertEqual(run({"V": "-n x"}, "cat $V"), 0)
+        self.assertEqual(mock_exec.call_args.args[0], self._LIB + "cat -n x")
+        self.assertEqual(run({"V": "x && y"}, 'cat "$V"'), 0)
+        self.assertEqual(mock_exec.call_args.args[0], self._LIB + 'cat "x && y"')
+
     @patch("lshell.utils.exec_cmd", return_value=0)
     def test_67_no_library_means_the_line_is_untouched(self, mock_exec):
         """U67 | without a library nothing is written into the line."""
