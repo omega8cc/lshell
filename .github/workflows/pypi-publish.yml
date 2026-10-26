@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   publish:
+    # limited-shell on PyPI is published from the upstream repository only;
+    # a fork has no trusted publisher there, so every tag ended in a failed run.
+    if: github.repository == 'ghantoos/lshell'
     runs-on: ubuntu-latest
     environment:
       name: pypi
