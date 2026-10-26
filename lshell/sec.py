@@ -159,15 +159,19 @@ def _dot_entry_variants(pattern):
     return [os.sep.join(parts) for parts in itertools.product(*choices)]
 
 
-def expand_shell_wildcards(item):
-    """Expand shell wildcards and return all candidate filesystem paths."""
+def expand_shell_wildcards(item, dot_entries=True):
+    """Expand shell wildcards and return all candidate filesystem paths.
+
+    dot_entries=False is for a word the shell does not glob (its wildcard
+    characters are quoted): the "." and ".." spellings are left out there.
+    """
 
     # Expand shell variables like $HOME first.
     expanded_item = _safe_expand_path(item)
     if expanded_item is None:
         return []
 
-    variants = _dot_entry_variants(expanded_item)
+    variants = _dot_entry_variants(expanded_item) if dot_entries else [expanded_item]
     if variants is None:
         return []
 
@@ -271,8 +275,66 @@ def _looks_like_path_token(token):
     return False
 
 
+def _shell_words(segment):
+    """Split a segment as shlex.split does, noting the words the shell globs.
+
+    Returns (word, globbed) pairs, globbed being True when a wildcard
+    character, "$" or "`" of the word stands outside quotes and escapes:
+    the shell expands only such a word (an unquoted expansion's value is
+    globbed too). None when the segment does not split.
+    """
+    words = []
+    word, globbed, started, quote = [], False, False, None
+    chars = iter(segment)
+    for char in chars:
+        if quote == "'":
+            if char == "'":
+                quote = None
+            else:
+                word.append(char)
+        elif quote == '"':
+            if char == '"':
+                quote = None
+            elif char == "\\":
+                following = next(chars, None)
+                if following is None:
+                    return None
+                if following not in '"\\':
+                    word.append(char)
+                word.append(following)
+            else:
+                word.append(char)
+        elif char in "'\"":
+            quote, started = char, True
+        elif char == "\\":
+            following = next(chars, None)
+            if following is None:
+                return None
+            word.append(following)
+            started = True
+        elif char in " \t\r\n":
+            if started:
+                words.append(("".join(word), globbed))
+                word, globbed, started = [], False, False
+        else:
+            word.append(char)
+            started = True
+            if char in "*?[$`":
+                globbed = True
+    if quote is not None:
+        return None
+    if started:
+        words.append(("".join(word), globbed))
+    return words
+
+
 def _path_tokens_from_line(line):
-    """Extract path-like tokens from command segments, excluding bare command names."""
+    """Extract path-like tokens from command segments, excluding bare command names.
+
+    Returns (token, globbed) pairs: globbed says whether the shell expands
+    the token's wildcards (see _shell_words); every token counts as globbed
+    where that reading disagrees with the split used here.
+    """
     segments = utils.split_commands(line)
     if not segments:
         return []
@@ -286,6 +348,12 @@ def _path_tokens_from_line(line):
         if not tokens:
             continue
 
+        words = _shell_words(segment)
+        if words is not None and [word for word, _globbed in words] == tokens:
+            globbed = [flag for _word, flag in words]
+        else:
+            globbed = [True] * len(tokens)
+
         index = 0
         while index < len(tokens) and _is_assignment_word(tokens[index]):
             index += 1
@@ -293,7 +361,7 @@ def _path_tokens_from_line(line):
             continue
 
         command = tokens[index]
-        args = tokens[index + 1 :]
+        args = list(zip(tokens[index + 1 :], globbed[index + 1 :]))
 
         if command == "cd" and args:
             # `cd var` style operands are path targets even without slashes.
@@ -301,13 +369,13 @@ def _path_tokens_from_line(line):
             continue
 
         if args:
-            path_tokens.extend(token for token in args if _looks_like_path_token(token))
+            path_tokens.extend(arg for arg in args if _looks_like_path_token(arg[0]))
             continue
 
         # Single token mode (used by completion/policy path checks):
         # only treat it as a path when it looks path-like.
         if _looks_like_path_token(command):
-            path_tokens.append(command)
+            path_tokens.append((command, globbed[index]))
 
     return path_tokens
 
@@ -322,8 +390,8 @@ def check_path(line, conf, completion=None, ssh=None, strict=None):
 
     path_tokens = _path_tokens_from_line(line)
 
-    for item in path_tokens:
-        candidates = expand_shell_wildcards(item)
+    for item, globbed in path_tokens:
+        candidates = expand_shell_wildcards(item, dot_entries=globbed)
         if not candidates:
             if not completion:
                 ret, conf = warn_count("path", item, conf, strict=strict, ssh=ssh)

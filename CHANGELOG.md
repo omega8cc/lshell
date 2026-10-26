@@ -3,6 +3,9 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.13 (BOA fork, 2026-10-26)
+- Fix: a quoted or escaped wildcard that starts with a period is checked as typed again, as in 0.11.11. The shell hands such a word to the command unexpanded (`find . -name '.*'`, `grep -rl '.*' .`), but 0.11.12 read it as the parent directory and refused the line. Only a word whose wildcard stands outside quotes and escapes is also checked as the `.` and `..` entries the shell matches.
+
 ### v0.11.12 (BOA fork, 2026-10-26)
 - Fix: the path check reads a wildcard that starts with a period (`.*`, `.?`) as the shell running the line does. Since 0.11.2 the line runs through `/bin/sh`, where such a wildcard also matches `.` and `..`; the check expanded it with Python's glob, which never returns those entries, so a path reached through `..` was checked as typed. `ls .*` is now refused where the parent directory is outside the allowed path, as `ls ..` is.
 - Tests: the suite passes on Linux hosts that have sudo's noexec library. Tests that compare the line handed to the shell with the typed one switch the library off, and the exit-status tests wait for the child before reading its status.

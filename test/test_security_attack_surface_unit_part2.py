@@ -589,6 +589,37 @@ class TestAttackSurfacePart2(unittest.TestCase):
             finally:
                 os.chdir(cwd)
 
+    def test_check_path_quoted_dot_led_wildcard_is_not_read_as_the_entries(self):
+        """A dot-led wildcard the shell does not glob is not checked as "..".
+
+        Quoted or escaped, the pattern reaches the tool as typed (find's
+        -name, grep's expression); 0.11.12 checked it as the parent directory
+        and refused such a line.
+        """
+        with tempfile.TemporaryDirectory() as top:
+            top = os.path.realpath(top)
+            allowed = os.path.join(top, "allowed")
+            os.mkdir(allowed)
+            open(os.path.join(allowed, ".hidden"), "w", encoding="utf-8").close()
+            userconf = CheckConfig(
+                self.args + [f"--path=['{allowed}']"]
+            ).returnconf()
+            cwd = os.getcwd()
+            os.chdir(allowed)
+            try:
+                for line in (
+                    "find . -name '.*'",
+                    'find . -name ".*"',
+                    "ls .\\*",
+                    "grep -rl '.*' .",
+                ):
+                    self.assertEqual(sec.check_path(line, userconf)[0], 0, line)
+                # controls: unquoted wildcards, also one after a quoted period
+                for line in ("ls .*", "ls '.'*"):
+                    self.assertEqual(sec.check_path(line, userconf)[0], 1, line)
+            finally:
+                os.chdir(cwd)
+
 
 if __name__ == "__main__":
     unittest.main()

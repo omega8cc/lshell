@@ -1,6 +1,7 @@
 """Property-based security tests for parser, expansion, and path ACL checks."""
 
 import os
+import shlex
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -92,6 +93,9 @@ _PAYLOAD_ALPHABET = st.characters(
     max_codepoint=126,
 )
 _NAME_STRATEGY = st.from_regex(r"[a-z]{3,8}", fullmatch=True)
+# Quotes, escapes, blanks and the characters the path check's word reading
+# tracks, so generated lines exercise every state of that reading.
+_WORD_SPLIT_ALPHABET = "ab .*?[]$`'\"\\ \t\n/~-="
 
 
 @st.composite
@@ -382,3 +386,15 @@ class TestSecurityPropertyBased(unittest.TestCase):
             f"{variable}={value} echo ok", runtime_policy
         )
         self.assertTrue(decision["allowed"])
+
+    @settings(max_examples=300, deadline=None)
+    @given(segment=st.text(_WORD_SPLIT_ALPHABET, max_size=24))
+    def test_shell_words_split_as_shlex_does(self, segment):
+        """The path check's word reading splits every line shlex splits, alike."""
+        try:
+            expected = shlex.split(segment, posix=True)
+        except ValueError:
+            return
+        words = sec._shell_words(segment)  # pylint: disable=protected-access
+        self.assertIsNotNone(words)
+        self.assertEqual([word for word, _globbed in words], expected)
