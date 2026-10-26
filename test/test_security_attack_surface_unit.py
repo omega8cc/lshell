@@ -60,6 +60,10 @@ class TestAttackSurface(unittest.TestCase):
     """Tests aimed at command-injection/bypass style edge cases."""
 
     args = [f"--config={CONFIG}", "--quiet=1"]
+    # Where sudo's noexec library is installed, every segment handed to
+    # exec_cmd carries an LD_PRELOAD= prefix; tests that compare the handed
+    # line with the typed one switch the library off to run alike on any host.
+    plain_args = args + ["--path_noexec=''"]
 
     def test_split_command_sequence_does_not_split_escaped_pipe(self):
         """Treat escaped pipes as literal text in a command token."""
@@ -354,7 +358,7 @@ class TestAttackSurface(unittest.TestCase):
     ):
         """Skip right-hand commands after failed && and execute || recovery."""
         conf = CheckConfig(
-            self.args
+            self.plain_args
             + [
                 "--allowed=['false','skip1','skip2','echo']",
                 "--forbidden=[]",

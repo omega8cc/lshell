@@ -50,6 +50,8 @@ class TestFunctions(unittest.TestCase):
         child.sendline("lslsls")
         child.sendline("lslsls")
         child.expect(pexpect.EOF, timeout=10)
+        # EOF can arrive before the child is reaped; wait() collects its status
+        child.wait()
 
         # Assert that the process exited
         self.assertIsNotNone(

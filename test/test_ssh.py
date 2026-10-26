@@ -39,6 +39,8 @@ class TestFunctions(unittest.TestCase):
             f"{LSHELL} " f"--config {CONFIG} " f"--overssh \"['ls']\" " f"-c 'ls'"
         )
         self.child.expect(pexpect.EOF, timeout=10)
+        # EOF can arrive before the child is reaped; wait() collects its status
+        self.child.wait()
 
         # Assert that the process exited
         self.assertIsNotNone(
@@ -66,6 +68,8 @@ class TestFunctions(unittest.TestCase):
             f"-c 'ls /random'"
         )
         self.child.expect(pexpect.EOF, timeout=10)
+        # EOF can arrive before the child is reaped; wait() collects its status
+        self.child.wait()
 
         # Assert that the process exited
         self.assertIsNotNone(
@@ -89,6 +93,8 @@ class TestFunctions(unittest.TestCase):
             f"{LSHELL} " f"--config {CONFIG} " f"--overssh \"['ls']\" " f"-c 'lss'"
         )
         self.child.expect(pexpect.EOF, timeout=10)
+        # EOF can arrive before the child is reaped; wait() collects its status
+        self.child.wait()
 
         # Assert that the process exited
         self.assertIsNotNone(

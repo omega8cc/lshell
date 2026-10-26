@@ -64,6 +64,10 @@ class TestAttackSurfacePart2(unittest.TestCase):
     """Continuation tests for parser/auth attack-surface scenarios."""
 
     args = [f"--config={CONFIG}", "--quiet=1"]
+    # Where sudo's noexec library is installed, every segment handed to
+    # exec_cmd carries an LD_PRELOAD= prefix; tests that compare the handed
+    # line with the typed one switch the library off to run alike on any host.
+    plain_args = args + ["--path_noexec=''"]
 
     @patch("lshell.utils.os.killpg")
     @patch("lshell.utils.os.kill")
@@ -188,7 +192,7 @@ class TestAttackSurfacePart2(unittest.TestCase):
     ):
         """Assignment-only command should update env before next && segment expands."""
         conf = CheckConfig(
-            self.args + ["--allowed=['echo']", "--forbidden=[]", "--strict=0"]
+            self.plain_args + ["--allowed=['echo']", "--forbidden=[]", "--strict=0"]
         ).returnconf()
         shell = DummyShellContext(conf)
 
@@ -212,7 +216,7 @@ class TestAttackSurfacePart2(unittest.TestCase):
     ):
         """Assignment-only command should update env before next ';' segment expands."""
         conf = CheckConfig(
-            self.args + ["--allowed=['echo']", "--forbidden=[]", "--strict=0"]
+            self.plain_args + ["--allowed=['echo']", "--forbidden=[]", "--strict=0"]
         ).returnconf()
         shell = DummyShellContext(conf)
 
@@ -236,7 +240,7 @@ class TestAttackSurfacePart2(unittest.TestCase):
     ):
         """Variable expansion should not occur inside single quotes in chained commands."""
         conf = CheckConfig(
-            self.args + ["--allowed=['echo']", "--forbidden=[]", "--strict=0"]
+            self.plain_args + ["--allowed=['echo']", "--forbidden=[]", "--strict=0"]
         ).returnconf()
         shell = DummyShellContext(conf)
 
@@ -261,7 +265,7 @@ class TestAttackSurfacePart2(unittest.TestCase):
     ):
         """Authorize and execute bash script invocation when full command is allowlisted."""
         conf = CheckConfig(
-            self.args
+            self.plain_args
             + [
                 "--allowed=['bash test/testfiles/login_script.sh']",
                 "--forbidden=[]",
@@ -350,7 +354,7 @@ class TestAttackSurfacePart2(unittest.TestCase):
     ):
         """Shell-style ${...} forms should be executable when '${' is not forbidden."""
         conf = CheckConfig(
-            self.args
+            self.plain_args
             + [
                 "--allowed=['echo']",
                 "--forbidden=[]",
