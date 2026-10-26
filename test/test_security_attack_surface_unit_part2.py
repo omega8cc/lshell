@@ -558,6 +558,37 @@ class TestAttackSurfacePart2(unittest.TestCase):
             context.log.messages,
         )
 
+    def test_check_path_dot_led_wildcard_is_checked_as_the_entry_it_matches(self):
+        """A wildcard /bin/sh expands to ".." is checked as that path.
+
+        A wildcard component that starts with a period also matches "." and
+        ".." in POSIX sh, which runs the line; Python's glob never returns
+        them, so the check used to validate the literal pattern instead.
+        """
+        with tempfile.TemporaryDirectory() as top:
+            top = os.path.realpath(top)
+            allowed = os.path.join(top, "allowed")
+            os.mkdir(allowed)
+            outside = os.path.join(top, "outside.txt")
+            inside = os.path.join(allowed, "inside.txt")
+            for name in (outside, inside):
+                open(name, "w", encoding="utf-8").close()
+            userconf = CheckConfig(
+                self.args + [f"--path=['{allowed}']"]
+            ).returnconf()
+            cwd = os.getcwd()
+            os.chdir(allowed)
+            try:
+                self.assertIn(outside, sec.expand_shell_wildcards(".*./outside.txt"))
+                self.assertEqual(sec.check_path("ls .*./outside.txt", userconf)[0], 1)
+                self.assertEqual(sec.check_path("ls .?/outside.txt", userconf)[0], 1)
+                # controls: a file inside the path, and a dot-led wildcard
+                # that matches neither entry
+                self.assertEqual(sec.check_path("ls ./inside.txt", userconf)[0], 0)
+                self.assertEqual(sec.check_path("ls .x*/inside.txt", userconf)[0], 0)
+            finally:
+                os.chdir(cwd)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,10 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.12 (BOA fork, 2026-10-26)
+- Fix: the path check reads a wildcard that starts with a period (`.*`, `.?`) as the shell running the line does. Since 0.11.2 the line runs through `/bin/sh`, where such a wildcard also matches `.` and `..`; the check expanded it with Python's glob, which never returns those entries, so a path reached through `..` was checked as typed. `ls .*` is now refused where the parent directory is outside the allowed path, as `ls ..` is.
+- Tests: the suite passes on Linux hosts that have sudo's noexec library. Tests that compare the line handed to the shell with the typed one switch the library off, and the exit-status tests wait for the child before reading its status.
+
 ### v0.11.11 (BOA fork, 2026-10-26)
 - Fix: an assignment-only line such as `B=$A` stores its value again when the value holds `|` or `&`. 0.11.10 checked every segment for a second command before the assignment step, though lshell stores such a line itself and no shell sees it; the check now covers exactly the segments handed to the shell.
 - The 0.11.10 note said no shell-valid line loses anything. A segment handed to the shell whose unquoted variable holds a list operator is refused also where a shell would have passed the value as one argument (`wget $URL` with `&` in the URL); 0.11.9 handed such a line to the shell split at the operator. Quote the variable (`"$V"`) to pass its value as one argument.

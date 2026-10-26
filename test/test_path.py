@@ -74,8 +74,11 @@ class TestFunctions(unittest.TestCase):
 
     def test_12_etc_passwd_2(self):
         """F12 | /etc/passwd: empty variable 'ls -l .*./.*./etc/passwd'"""
+        # /bin/sh matches ".." with a dot-led wildcard, so the path check
+        # sees ../../etc/passwd as the shell would
         expected = (
-            "ls: cannot access '.*./.*./etc/passwd': No such file or directory\r\n"
+            'lshell: forbidden path: "/etc/passwd"\r\n'
+            "lshell: warning: 1 violation remaining before session termination\r\n"
         )
         self.child.sendline("ls -l .*./.*./etc/passwd")
         self.child.expect(PROMPT)
@@ -84,7 +87,12 @@ class TestFunctions(unittest.TestCase):
 
     def test_13a_etc_passwd_3(self):
         """F13(a) | /etc/passwd: empty variable 'ls -l .?/.?/etc/passwd'"""
-        expected = "ls: cannot access '.?/.?/etc/passwd': No such file or directory\r\n"
+        # /bin/sh matches ".." with a dot-led wildcard, so the path check
+        # sees ../../etc/passwd as the shell would
+        expected = (
+            'lshell: forbidden path: "/etc/passwd"\r\n'
+            "lshell: warning: 1 violation remaining before session termination\r\n"
+        )
         self.child.sendline("ls -l .?/.?/etc/passwd")
         self.child.expect(PROMPT)
         result = self.child.before.decode("utf8").split("\n", 1)[1]

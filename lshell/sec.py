@@ -8,6 +8,8 @@ import re
 import os
 import shlex
 import glob
+import fnmatch
+import itertools
 
 # import lshell specifics
 from lshell import messages
@@ -16,6 +18,7 @@ from lshell import audit
 
 EXTENSION_RESTRICTION_EXEMPT_COMMANDS = {"cd", "clear", "fg", "bg", "ls"}
 MAX_WILDCARD_MATCHES = 4096
+WILDCARD_CHARS = re.compile(r"[*?[]")
 
 
 def _is_assignment_word(word):
@@ -132,6 +135,30 @@ def _safe_expand_path(path):
         return None
 
 
+def _dot_entry_variants(pattern):
+    """Return the pattern spelled every way the shell's dot entries allow.
+
+    The line runs through exec_shell (/bin/sh by default), where a wildcard
+    component that starts with a period also matches the entries "." and
+    ".." (POSIX sh; bash only from 5.2 skips them). Python's glob never
+    returns those entries, so each such component is also tried as the
+    entry it matches. None when the variants fan out too far.
+    """
+    choices = []
+    total = 1
+    for part in pattern.split(os.sep):
+        options = [part]
+        if part.startswith(".") and WILDCARD_CHARS.search(part):
+            options += [
+                entry for entry in (".", "..") if fnmatch.fnmatchcase(entry, part)
+            ]
+        total *= len(options)
+        if total > MAX_WILDCARD_MATCHES:
+            return None
+        choices.append(options)
+    return [os.sep.join(parts) for parts in itertools.product(*choices)]
+
+
 def expand_shell_wildcards(item):
     """Expand shell wildcards and return all candidate filesystem paths."""
 
@@ -140,16 +167,21 @@ def expand_shell_wildcards(item):
     if expanded_item is None:
         return []
 
+    variants = _dot_entry_variants(expanded_item)
+    if variants is None:
+        return []
+
     # Expand wildcard patterns against the filesystem and validate all matches.
     # Fail closed if expansion fans out too much to avoid memory abuse.
     try:
         expanded_items = []
-        for match in glob.iglob(expanded_item, recursive=True):
-            resolved = _safe_realpath(match)
-            if resolved:
-                expanded_items.append(resolved)
-            if len(expanded_items) > MAX_WILDCARD_MATCHES:
-                return []
+        for variant in variants:
+            for match in glob.iglob(variant, recursive=True):
+                resolved = _safe_realpath(match)
+                if resolved:
+                    expanded_items.append(resolved)
+                if len(expanded_items) > MAX_WILDCARD_MATCHES:
+                    return []
     except (OSError, RuntimeError, ValueError, re.error):
         return []
 
