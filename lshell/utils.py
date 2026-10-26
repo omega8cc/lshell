@@ -740,14 +740,6 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
             for part in pipeline_parts
         ]
         full_command = " | ".join(pipeline_parts)
-        # A POSIX shell never reads an operator out of a value, but this line
-        # is handed to one as text: a segment that is no longer one command
-        # after expansion is refused, since the noexec prefix and the
-        # per-segment decisions read only its first command.
-        for part in pipeline_parts:
-            expanded_sequence = split_command_sequence(part)
-            if expanded_sequence is None or len(expanded_sequence) > 1:
-                return _handle_unknown_syntax(full_command)
         background = bool(j + 1 < len(command_sequence) and command_sequence[j + 1] == "&")
 
         if background:
@@ -819,6 +811,15 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
             retcode = 0
             i = j + (2 if background else 1)
             continue
+
+        # From here the line is handed to a shell as text. A segment that is
+        # no longer one command after expansion is refused: the noexec prefix
+        # and the per-segment decisions read only its first command. An
+        # assignment-only line is stored above and never reaches a shell.
+        for part in pipeline_parts:
+            expanded_sequence = split_command_sequence(part)
+            if expanded_sequence is None or len(expanded_sequence) > 1:
+                return _handle_unknown_syntax(full_command)
 
         if not skip_policy_checks:
             # check that commands/chars present in line are allowed/secure

@@ -3,6 +3,11 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.11 (BOA fork, 2026-10-26)
+- Fix: an assignment-only line such as `B=$A` stores its value again when the value holds `|` or `&`. 0.11.10 checked every segment for a second command before the assignment step, though lshell stores such a line itself and no shell sees it; the check now covers exactly the segments handed to the shell.
+- The 0.11.10 note said no shell-valid line loses anything. A segment handed to the shell whose unquoted variable holds a list operator is refused also where a shell would have passed the value as one argument (`wget $URL` with `&` in the URL); 0.11.9 handed such a line to the shell split at the operator. Quote the variable (`"$V"`) to pass its value as one argument.
+- The tests assert the refusal itself and keep a pipeline, an assignment copy and a chained copy running.
+
 ### v0.11.10 (BOA fork, 2026-10-25)
 - Security: a pipeline segment that holds more than one command once its variables are expanded is refused. Variables are expanded per segment after the line is split, and the expanded line is handed to the shell as text, so a list operator inside a value became a second command in that segment; the noexec prefix and the per-segment decisions read only the first. A POSIX shell never reads an operator out of a value, so no shell-valid line loses anything; a quoted reference (`"$V"`) stays one argument and runs as before.
 

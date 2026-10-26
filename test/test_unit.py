@@ -886,7 +886,8 @@ class TestFunctions(unittest.TestCase):
         """
         from lshell import utils
 
-        def run(env, line):
+        def run(env, line, read=()):
+            """Return the line's exit code and the named variables it left set."""
             mock_exec.reset_mock()
             conf = CheckConfig(
                 self.args
@@ -903,9 +904,11 @@ class TestFunctions(unittest.TestCase):
             with patch.dict(os.environ, env), patch(
                 "lshell.utils._command_exists", return_value=True
             ), patch("lshell.utils.audit.log_command_event"):
-                if not env:
-                    os.environ.pop("V", None)
-                return utils.cmd_parse_execute(line, shell_context=shell)
+                for name in ("V", "B", "D", "U"):
+                    if name not in env:
+                        os.environ.pop(name, None)
+                rc = utils.cmd_parse_execute(line, shell_context=shell)
+                return rc, {name: os.environ.get(name) for name in read}
 
         untouched = {"composer", "true"}
         lines = []
@@ -916,15 +919,30 @@ class TestFunctions(unittest.TestCase):
             lines.append(({}, f"V='{value}' && cat $V"))
         for env, line in lines:
             with self.subTest(line=line, env=env):
-                run(env, line)
+                rc, _ = run(env, line)
+                self.assertNotEqual(rc, 0)
+                self.assertEqual(mock_exec.call_count, 0)
                 for call in mock_exec.call_args_list:
                     self._assert_every_command_prefixed(call.args[0], untouched)
 
         # a value that stays one command still runs, preloaded
-        self.assertEqual(run({"V": "-n x"}, "cat $V"), 0)
+        self.assertEqual(run({"V": "-n x"}, "cat $V")[0], 0)
         self.assertEqual(mock_exec.call_args.args[0], self._LIB + "cat -n x")
-        self.assertEqual(run({"V": "x && y"}, 'cat "$V"'), 0)
+        self.assertEqual(run({"V": "-n x"}, "echo a | cat $V")[0], 0)
+        self.assertEqual(
+            mock_exec.call_args.args[0], self._LIB + "echo a | " + self._LIB + "cat -n x"
+        )
+        self.assertEqual(run({"V": "x && y"}, 'cat "$V"')[0], 0)
         self.assertEqual(mock_exec.call_args.args[0], self._LIB + 'cat "x && y"')
+        # an assignment-only line is stored by lshell and never reaches a
+        # shell, so its value keeps the characters a shell would keep
+        for value in ("x|y", "a&b", "x&&y", "x||y", "R&D"):
+            with self.subTest(copy=value):
+                self.assertEqual(run({"V": value}, "B=$V", read=("B",)), (0, {"B": value}))
+                self.assertEqual(mock_exec.call_count, 0)
+        rc, seen = run({}, "U='a&b' && D=$U && cat \"$D\"", read=("D",))
+        self.assertEqual((rc, seen), (0, {"D": "a&b"}))
+        self.assertEqual(mock_exec.call_args.args[0], self._LIB + 'cat "a&b"')
 
     @patch("lshell.utils.exec_cmd", return_value=0)
     def test_67_no_library_means_the_line_is_untouched(self, mock_exec):

@@ -187,9 +187,10 @@ before exec and inherited by the whole process tree; it cannot be lifted,
 library (`path_noexec`) is the other layer: since 0.11 it is applied per
 pipeline segment as an `LD_PRELOAD=` prefix in the line whenever it cannot
 be preloaded on the `exec_shell` itself, so an allowed command outside
-`allowed_shell_escape` cannot exec even when piped into one that can, and a
-segment that holds more than one command once its variables are expanded is
-refused. Commands on
+`allowed_shell_escape` cannot exec even when piped into one that can. In every
+mode, a segment handed to the shell that holds more than one command once its
+variables are expanded is refused; quote the variable (`"$V"`) to pass its value
+as one argument. Commands on
 `landlock_exempt` (default `passwd`, `ping`: setuid tools lose their
 privilege under `no_new_privs`) and `sudo`/`su` run without it. On a kernel
 without Landlock commands run unconfined and the error is logged, unless
