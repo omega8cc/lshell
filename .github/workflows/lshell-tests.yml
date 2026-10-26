@@ -1,8 +1,7 @@
 name: Lshell Tests
 
-# master-om8, the BOA fork's branch, is judged by the pytest job alone: the
-# lint job reports messages already present upstream, and the fuzz and SSH
-# end-to-end jobs have not been run against the fork.
+# master-om8, the BOA fork's branch, is judged by the tests alone: the lint
+# job reports messages already present upstream.
 on:
   push:
     branches: [ "main", "pre-release", "master-om8" ]
@@ -68,7 +67,6 @@ jobs:
 
   fuzz-security-parser:
     name: Fuzz Security Parser/Policy
-    if: github.ref_name != 'master-om8' && github.base_ref != 'master-om8'
     runs-on: ubuntu-latest
 
     steps:
@@ -82,7 +80,6 @@ jobs:
 
   ssh-e2e:
     name: SSH End-to-End (Docker + Ansible)
-    if: github.ref_name != 'master-om8' && github.base_ref != 'master-om8'
     runs-on: ubuntu-latest
 
     steps:
