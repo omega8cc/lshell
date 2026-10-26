@@ -7,6 +7,7 @@ Add all new tests related to `test_security_attack_surface_unit.py` in this file
 
 import io
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -619,6 +620,75 @@ class TestAttackSurfacePart2(unittest.TestCase):
                     self.assertEqual(sec.check_path(line, userconf)[0], 1, line)
             finally:
                 os.chdir(cwd)
+
+    _SHELL_STARTUP_VARIABLES = {
+        "BASH_ENV": "/tmp/startup",
+        "ENV": "/tmp/startup",
+        "SHELLOPTS": "xtrace",
+        "BASHOPTS": "extglob",
+        "PS4": "+ ",
+        "BASH_FUNC_ls%%": "() { :; }",
+    }
+
+    @patch("lshell.utils.signal.getsignal", return_value=None)
+    @patch("lshell.utils.signal.signal")
+    @patch("lshell.utils.subprocess.Popen")
+    def test_exec_cmd_drops_shell_startup_variables(
+        self, mock_popen, _mock_signal, _mock_getsignal
+    ):
+        """Variables a shell reads at startup never reach the shell a line runs through.
+
+        On BOA that shell is websh, a bash script. An exported ordinary
+        variable still reaches it.
+        """
+
+        class FakeProc:
+            """Minimal subprocess fake for exec_cmd foreground path."""
+
+            def __init__(self):
+                self.returncode = 0
+                self.pid = 12345
+                self.args = ["/bin/sh", "-c", "echo ok"]
+                self.lshell_cmd = ""
+
+            def communicate(self):
+                """Simulate foreground process I/O completion."""
+                return None
+
+            def poll(self):
+                """Simulate an already-finished subprocess."""
+                return 0
+
+        mock_popen.return_value = FakeProc()
+        exported = dict(self._SHELL_STARTUP_VARIABLES, LSHELL_ORDINARY="kept")
+        with patch.dict(os.environ, exported):
+            ret = utils.exec_cmd("echo ok")
+
+        self.assertEqual(ret, 0)
+        env = mock_popen.call_args.kwargs["env"]
+        for name in self._SHELL_STARTUP_VARIABLES:
+            # the name alone: a failure must not print the environment
+            self.assertFalse(name in env, f"{name} reached the shell")
+        self.assertEqual(env.get("LSHELL_ORDINARY"), "kept")
+
+    def test_noexec_probe_drops_shell_startup_variables(self):
+        """The noexec probe runs bash too: it gets the same environment rules."""
+        checker = CheckConfig(self.args)
+        completed = subprocess.CompletedProcess(
+            args=["bash", "-c", "/usr/bin/true"], returncode=0, stdout=None
+        )
+        exported = dict(self._SHELL_STARTUP_VARIABLES, LSHELL_ORDINARY="kept")
+        with patch.dict(os.environ, exported), patch(
+            "lshell.checkconfig.subprocess.run", return_value=completed
+        ) as run:
+            checker.noexec_library_usable("/usr/libexec/sudo/sudo_noexec.so")
+
+        env = run.call_args.kwargs["env"]
+        for name in self._SHELL_STARTUP_VARIABLES:
+            # the name alone: a failure must not print the environment
+            self.assertFalse(name in env, f"{name} reached the shell")
+        self.assertEqual(env.get("LSHELL_ORDINARY"), "kept")
+        self.assertEqual(env.get("LD_PRELOAD"), "/usr/libexec/sudo/sudo_noexec.so")
 
 
 if __name__ == "__main__":

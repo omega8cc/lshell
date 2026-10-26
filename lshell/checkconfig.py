@@ -45,10 +45,8 @@ class CheckConfig:
         command process itself. Under the 0.11 shell-based path, accepting a
         working library breaks every session.
         """
-        probe_env = dict(os.environ)
+        probe_env = utils.drop_shell_startup_env(dict(os.environ))
         probe_env["LD_PRELOAD"] = path_noexec
-        probe_env.pop("BASH_ENV", None)
-        probe_env.pop("ENV", None)
 
         try:
             probe = subprocess.run(

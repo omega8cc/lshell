@@ -3,7 +3,7 @@
 import sys
 import os
 
-__version__ = "0.11.13"
+__version__ = "0.11.14"
 
 # Required config variable list per user
 required_config = ["allowed", "forbidden", "warning_counter"]
@@ -148,6 +148,13 @@ FORBIDDEN_ENVIRON = (
     "NIS_PATH",
     "PATH",
 )
+
+# Variables a shell reads at startup: startup files (BASH_ENV, ENV), options
+# (SHELLOPTS, BASHOPTS) and the trace prompt (PS4). They never reach the
+# shell a line runs through, nor do bash function definitions (BASH_FUNC_*),
+# see utils.drop_shell_startup_env.
+SHELL_STARTUP_ENVIRON = ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PS4")
+BASH_FUNCTION_ENV_PREFIX = "BASH_FUNC_"
 
 # Single source of truth for trusted SFTP protocol executables.
 TRUSTED_SFTP_PROTOCOL_BINARIES = (

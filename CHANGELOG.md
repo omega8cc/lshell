@@ -3,6 +3,9 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.14 (BOA fork, 2026-10-26)
+- Security: the shell a line runs through no longer receives the variables a shell reads at startup. Besides `BASH_ENV` and `ENV`, lshell now also removes `SHELLOPTS`, `BASHOPTS`, `PS4` and bash function definitions (`BASH_FUNC_*`) from the command environment and from the noexec probe's. An account can still export any other variable to its commands. The function-definition part follows upstream lshell.
+
 ### v0.11.13 (BOA fork, 2026-10-26)
 - Fix: a quoted or escaped wildcard that starts with a period is checked as typed again, as in 0.11.11. The shell hands such a word to the command unexpanded (`find . -name '.*'`, `grep -rl '.*' .`), but 0.11.12 read it as the parent directory and refused the line. Only a word whose wildcard stands outside quotes and escapes is also checked as the `.` and `..` entries the shell matches.
 

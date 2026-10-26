@@ -961,6 +961,23 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
     return retcode
 
 
+def drop_shell_startup_env(env):
+    """Remove from env what the shell running a line would read at startup.
+
+    The line runs through exec_shell, which on BOA is websh, a bash script:
+    bash reads BASH_ENV, SHELLOPTS, BASHOPTS and PS4 from its environment and
+    imports BASH_FUNC_* variables as function definitions, while lshell lets
+    an account export almost any name. ENV is the POSIX sh counterpart of
+    BASH_ENV. Returns env, changed in place.
+    """
+    for name in list(env):
+        if name in variables.SHELL_STARTUP_ENVIRON or name.startswith(
+            variables.BASH_FUNCTION_ENV_PREFIX
+        ):
+            env.pop(name, None)
+    return env
+
+
 def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display=None):
     """Execute a command exactly as entered, with support for backgrounding via Ctrl+Z.
 
@@ -988,9 +1005,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
             conf[logged_key] = sorted(already_logged.union(pending))
     if extra_env:
         exec_env.update(extra_env)
-    # Prevent non-interactive shell startup file injection.
-    exec_env.pop("BASH_ENV", None)
-    exec_env.pop("ENV", None)
+    drop_shell_startup_env(exec_env)
 
     class CtrlZException(Exception):
         """Custom exception to handle Ctrl+Z (SIGTSTP)."""
