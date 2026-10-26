@@ -673,14 +673,17 @@ class TestAttackSurfacePart2(unittest.TestCase):
 
     def test_noexec_probe_drops_shell_startup_variables(self):
         """The noexec probe runs bash too: it gets the same environment rules."""
-        checker = CheckConfig(self.args)
         completed = subprocess.CompletedProcess(
             args=["bash", "-c", "/usr/bin/true"], returncode=0, stdout=None
         )
         exported = dict(self._SHELL_STARTUP_VARIABLES, LSHELL_ORDINARY="kept")
+        # CheckConfig writes LSHELL_ARGS into os.environ, which later lshell
+        # sessions read as their arguments: build it inside the patched
+        # environment so the test leaves nothing behind
         with patch.dict(os.environ, exported), patch(
             "lshell.checkconfig.subprocess.run", return_value=completed
         ) as run:
+            checker = CheckConfig(self.args)
             checker.noexec_library_usable("/usr/libexec/sudo/sudo_noexec.so")
 
         env = run.call_args.kwargs["env"]
