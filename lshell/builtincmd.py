@@ -11,6 +11,7 @@ import signal
 # import lshell specifics
 from lshell import variables
 from lshell import utils
+from lshell import containment
 
 
 # Store background jobs
@@ -330,9 +331,27 @@ def cmd_bg_fg(job_type, job_id):
                 try:
                     signal.signal(signal.SIGTSTP, handle_sigtstp)
                     print(_job_command(job))
-                    # Bring it to the foreground and wait
-                    os.killpg(os.getpgid(job.pid), signal.SIGCONT)
-                    job.wait()
+                    terminal_fd = None
+                    if getattr(job, "lshell_terminal", False):
+                        terminal_fd = utils.foreground_terminal()
+                    if terminal_fd is not None:
+                        # Its group takes the terminal before it continues;
+                        # a read from the terminal would stop it otherwise.
+                        containment.set_terminal_group(
+                            terminal_fd, os.getpgid(job.pid)
+                        )
+                        os.killpg(os.getpgid(job.pid), signal.SIGCONT)
+                        if utils.wait_foreground(job, terminal_fd):
+                            current_job_id = BACKGROUND_JOBS.index(job) + 1
+                            sys.stdout.write(
+                                f"\n[{current_job_id}]+  Stopped        {_job_command(job)}\n"
+                            )
+                            sys.stdout.flush()
+                            return 0
+                    else:
+                        # Bring it to the foreground and wait
+                        os.killpg(os.getpgid(job.pid), signal.SIGCONT)
+                        job.wait()
                     # Remove the job from the list if it has completed
                     if job.poll() is not None:
                         BACKGROUND_JOBS.pop(job_id - 1)

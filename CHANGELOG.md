@@ -3,6 +3,10 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.15 (BOA fork, 2026-10-28)
+- Fix: a foreground command run from a terminal holds that terminal, so a prompt it opens on `/dev/tty` reaches the user again: an unknown host key (`git clone` over SSH failed with `Host key verification failed.`), a key passphrase, a git password. Since upstream's job control (0.10.10, and in this fork from its first release) every command started in a new session, which has no controlling terminal. A foreground command now leads its own process group in lshell's session and is handed the terminal for its run, as a job-control shell runs it: Ctrl+Z and Ctrl+C reach that group, lshell reads a stop from the wait status, `fg` hands the terminal back to the resumed job, and a dropped connection hangs the command up as it would under any shell. Background jobs (`&`), `sudo`/`su` and commands run without a terminal start as before.
+- Tests: a foreground command reads a line through `/dev/tty`, and a job stopped with Ctrl+Z and resumed with `fg` reads the terminal again.
+
 ### v0.11.14 (BOA fork, 2026-10-26)
 - Security: the shell a line runs through no longer receives the variables a shell reads at startup. Besides `BASH_ENV` and `ENV`, lshell now also removes `SHELLOPTS`, `BASHOPTS`, `PS4` and bash function definitions (`BASH_FUNC_*`) from the command environment and from the noexec probe's. An account can still export any other variable to its commands. The function-definition part follows upstream lshell.
 

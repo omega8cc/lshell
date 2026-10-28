@@ -333,12 +333,36 @@ def unsupported_rlimits(limits, resource_module=None):
     return unsupported
 
 
-def build_preexec_fn(detached_session, limits):
-    """Build subprocess pre-exec hook to apply process/session limits."""
+def set_terminal_group(terminal_fd, pgid):
+    """Make ``pgid`` the terminal's foreground process group.
+
+    SIGTTOU is ignored for the call, so a process outside the foreground
+    group (lshell taking the terminal back, a child taking it before exec)
+    is not stopped by it.
+    """
+    previous = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    try:
+        os.tcsetpgrp(terminal_fd, pgid)
+    finally:
+        signal.signal(signal.SIGTTOU, previous)
+
+
+def build_preexec_fn(detached_session, limits, terminal_fd=None):
+    """Build subprocess pre-exec hook to apply process/session limits.
+
+    With ``terminal_fd`` a detached command leads its own process group in
+    lshell's session and takes the terminal, instead of starting a session:
+    a new session has no controlling terminal, so every /dev/tty prompt (an
+    unknown host key, a key passphrase, a git password) failed.
+    """
 
     def _preexec():
         if detached_session:
-            os.setsid()
+            if terminal_fd is not None:
+                os.setpgid(0, 0)
+                set_terminal_group(terminal_fd, os.getpgrp())
+            else:
+                os.setsid()
         apply_rlimits(limits)
 
     return _preexec

@@ -336,3 +336,41 @@ class TestFunctions(unittest.TestCase):
         # Second Ctrl+D should exit (kill remaining stopped jobs).
         child.sendeof()
         child.expect(pexpect.EOF, timeout=5)
+
+    def test_79_foreground_command_reads_the_terminal(self):
+        """F79 | A foreground command can prompt through /dev/tty."""
+        child = pexpect.spawn(
+            f"{LSHELL} --config {CONFIG} --path \"['/dev']\" "
+            "--allowed \"+['python3']\""
+        )
+        child.expect(PROMPT)
+
+        # ssh asks about an unknown host key this way; a command without a
+        # controlling terminal fails to open /dev/tty (ENXIO).
+        child.sendline(
+            "python3 -c \"print('tty:' + open('/dev/tty').readline().strip())\""
+        )
+        child.sendline("answer")
+        child.expect("tty:answer", timeout=10)
+        child.expect(PROMPT, timeout=5)
+        self.do_exit(child)
+
+    def test_80_resumed_job_reads_the_terminal(self):
+        """F80 | A job resumed with fg holds the terminal again."""
+        child = pexpect.spawn(f"{LSHELL} --config {CONFIG} --allowed \"+['cat']\"")
+        child.expect(PROMPT)
+
+        child.sendline("cat")
+        time.sleep(1)
+        child.sendcontrol("z")
+        child.expect(r"\[\d+\]\+  Stopped        cat", timeout=5)
+        child.expect(PROMPT)
+
+        child.sendline("fg")
+        child.expect("cat", timeout=5)
+        child.sendline("resumed-line")
+        # The terminal echoes the line, then cat writes it back.
+        child.expect("resumed-line\r\nresumed-line", timeout=5)
+        child.sendcontrol("c")
+        child.expect(PROMPT, timeout=5)
+        self.do_exit(child)

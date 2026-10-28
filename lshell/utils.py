@@ -978,6 +978,66 @@ def drop_shell_startup_env(env):
     return env
 
 
+def foreground_terminal():
+    """Return lshell's terminal descriptor while lshell holds its foreground.
+
+    None without a terminal (a command handed over ssh, a script, a pipe) or
+    while another process group holds it; commands then start a session.
+    """
+    if os.name != "posix":
+        return None
+    try:
+        terminal_fd = sys.stdin.fileno()
+        if os.isatty(terminal_fd) and os.tcgetpgrp(terminal_fd) == os.getpgrp():
+            return terminal_fd
+    except (AttributeError, OSError, ValueError):
+        pass
+    return None
+
+
+def wait_foreground(proc, terminal_fd, timeout=0):
+    """Wait on a command that holds the terminal, then take the terminal back.
+
+    Ctrl+Z and Ctrl+C reach the command's process group, not lshell, so a stop
+    is read from the wait status: True means the command stopped, False that
+    it ended, with ``proc.returncode`` set. Past ``timeout`` the group is
+    killed and subprocess.TimeoutExpired raised once it is reaped.
+    """
+    expired = threading.Event()
+    timer = None
+    if timeout > 0:
+
+        def _expire():
+            expired.set()
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+        timer = threading.Timer(timeout, _expire)
+        timer.daemon = True
+        timer.start()
+    try:
+        try:
+            _, status = os.waitpid(proc.pid, os.WUNTRACED)
+        except ChildProcessError:
+            proc.poll()
+            return False
+        if os.WIFSTOPPED(status):
+            return True
+        if os.WIFSIGNALED(status):
+            proc.returncode = -os.WTERMSIG(status)
+        else:
+            proc.returncode = os.WEXITSTATUS(status)
+    finally:
+        if timer is not None:
+            timer.cancel()
+        containment.set_terminal_group(terminal_fd, os.getpgrp())
+    if expired.is_set():
+        raise subprocess.TimeoutExpired(proc.args, timeout)
+    return False
+
+
 def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display=None):
     """Execute a command exactly as entered, with support for backgrounding via Ctrl+Z.
 
@@ -1012,6 +1072,17 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
 
         pass
 
+    def report_stopped():
+        """List the stopped command as a job and say so."""
+        # Keep one job entry per process to avoid duplicates on repeated suspend/resume.
+        if proc in builtincmd.BACKGROUND_JOBS:
+            job_id = builtincmd.BACKGROUND_JOBS.index(proc) + 1
+        else:
+            builtincmd.BACKGROUND_JOBS.append(proc)
+            job_id = len(builtincmd.BACKGROUND_JOBS)
+        sys.stdout.write(f"\n[{job_id}]+  Stopped        {shown}\n")
+        sys.stdout.flush()
+
     def handle_sigtstp(signum, frame):
         """Handle SIGTSTP (Ctrl+Z) by sending the process to the background."""
         if proc and proc.poll() is None:  # Ensure process is running
@@ -1019,14 +1090,7 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
                 os.killpg(os.getpgid(proc.pid), signal.SIGSTOP)
             else:
                 os.kill(proc.pid, signal.SIGSTOP)
-            # Keep one job entry per process to avoid duplicates on repeated suspend/resume.
-            if proc in builtincmd.BACKGROUND_JOBS:
-                job_id = builtincmd.BACKGROUND_JOBS.index(proc) + 1
-            else:
-                builtincmd.BACKGROUND_JOBS.append(proc)
-                job_id = len(builtincmd.BACKGROUND_JOBS)
-            sys.stdout.write(f"\n[{job_id}]+  Stopped        {shown}\n")
-            sys.stdout.flush()
+            report_stopped()
             raise CtrlZException()  # Raise custom exception for SIGTSTP handling
 
     def handle_sigcont(signum, frame):
@@ -1095,10 +1159,17 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
             cmd_args = split_cmd
             if not background:
                 detached_session = False
+        # A foreground command run from a terminal keeps it (its own process
+        # group in this session) so its /dev/tty prompts reach the user.
+        terminal_fd = None
+        if detached_session and not background:
+            terminal_fd = foreground_terminal()
         preexec_fn = None
         needs_resource_limits = runtime_limits.max_processes > 0
         if os.name == "posix" and (detached_session or needs_resource_limits):
-            preexec_fn = containment.build_preexec_fn(detached_session, runtime_limits)
+            preexec_fn = containment.build_preexec_fn(
+                detached_session, runtime_limits, terminal_fd
+            )
         # Landlock: confine this command and every process it spawns to the
         # configured roots, applied in the child right before exec. Skipped
         # for sudo/su and for landlock_exempt commands (setuid tools would
@@ -1156,11 +1227,20 @@ def exec_cmd(cmd, background=False, extra_env=None, conf=None, log=None, display
                 popen_kwargs["preexec_fn"] = preexec_fn
             proc = subprocess.Popen(cmd_args, **popen_kwargs)
             proc.lshell_cmd = shown
-            if command_timeout > 0:
+            if terminal_fd is not None:
+                proc.lshell_terminal = True
+                if wait_foreground(proc, terminal_fd, command_timeout):
+                    report_stopped()
+                    raise CtrlZException()
+            elif command_timeout > 0:
                 proc.communicate(timeout=command_timeout)
             else:
                 proc.communicate()
             retcode = proc.returncode if proc.returncode is not None else 0
+            if terminal_fd is not None and retcode == -signal.SIGINT:
+                # Ctrl+C reaches the command, not lshell: the status the
+                # KeyboardInterrupt branch gives the same keystroke.
+                retcode = 130
 
     except FileNotFoundError:
         sys.stderr.write(
