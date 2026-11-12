@@ -88,6 +88,7 @@ class TestOneLineFormatter(unittest.TestCase):
     def test_traceback_stays_on_the_record_line(self):
         """A logged exception is written on the record's one line."""
         formatter = OneLineFormatter("%(message)s")
+        text = ""
         try:
             raise ValueError("boom")
         except ValueError:
