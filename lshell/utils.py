@@ -578,6 +578,18 @@ def cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
     trusted_protocol is only for protocol commands (scp/sftp-server)
     that were already validated in run_overssh.
     """
+    # A refusal names one token; the log line also names the line it came
+    # from, so a reader sees what was typed around the refused word.
+    with sec.line_for_log(getattr(shell_context, "conf", None), command_line):
+        return _cmd_parse_execute(
+            command_line,
+            shell_context=shell_context,
+            trusted_protocol=trusted_protocol,
+        )
+
+
+def _cmd_parse_execute(command_line, shell_context=None, trusted_protocol=False):
+    """Parse and execute a shell command line (see cmd_parse_execute)."""
     def _handle_unknown_syntax(unknown_command):
         ret, shell_context.conf = sec.warn_unknown_syntax(
             unknown_command,

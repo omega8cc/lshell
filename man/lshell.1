@@ -150,6 +150,11 @@ config path (default is /var/log/lshell/)
 .TP
 .I loglevel
 0, 1, 2, 3 or 4  (0: no logs -> 4: logs everything)
+.RS
+Each record is one line of the log file or syslog: a control character in a
+command is written as \fB\\xNN\fR. A refusal that names one word of a longer
+line ends with \fBin "<line>"\fR, the whole line it came from.
+.RE
 .TP
 .I logfilename
 \- set to \fBsyslog\fR in order to log to syslog

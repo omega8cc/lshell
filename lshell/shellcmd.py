@@ -274,11 +274,12 @@ class ShellCmd(cmd.Cmd, object):
                 self.conf["ssh"] = utils.get_aliases(
                     self.conf["ssh"], _aliases_for_ssh_command()
                 )
-                ret_check_secure, self.conf = sec.check_secure(
-                    self.conf["ssh"],
-                    self.conf,
-                    strict=self.conf["strict"],
-                )
+                with sec.line_for_log(self.conf, self.conf["ssh"]):
+                    ret_check_secure, self.conf = sec.check_secure(
+                        self.conf["ssh"],
+                        self.conf,
+                        strict=self.conf["strict"],
+                    )
                 if ret_check_secure:
                     self.log.error(f'*** forbidden shell escape: "{self.conf["ssh"]}"')
                     audit.log_command_event(

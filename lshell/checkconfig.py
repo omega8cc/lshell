@@ -24,6 +24,33 @@ from lshell import audit
 from lshell import containment
 
 
+LOG_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _escape_log_control_char(match):
+    return f"\\x{ord(match.group()):02x}"
+
+
+class OneLineFormatter(logging.Formatter):
+    """Write each record as one log line, naming the checked line when kept.
+
+    Log files and syslog are read line by line, so a control character in a
+    typed or remote command is written as \\xNN and never starts a new line.
+    A refusal record that carries ``lshell_line`` ends with ``in "<line>"``,
+    the whole line the refused token came from.
+    """
+
+    def formatMessage(self, record):
+        text = super().formatMessage(record)
+        line = getattr(record, "lshell_line", None)
+        if line:
+            text = f'{text} in "{line}"'
+        return text
+
+    def format(self, record):
+        return LOG_CONTROL_CHARS.sub(_escape_log_control_char, super().format(record))
+
+
 class CheckConfig:
     """Check the configuration file."""
 
@@ -255,8 +282,8 @@ class CheckConfig:
             formatter = audit.EcsJsonFormatter()
             syslogformatter = audit.EcsJsonFormatter()
         else:
-            formatter = logging.Formatter(f"%(asctime)s ({getuser()}): %(message)s")
-            syslogformatter = logging.Formatter(
+            formatter = OneLineFormatter(f"%(asctime)s ({getuser()}): %(message)s")
+            syslogformatter = OneLineFormatter(
                 f"{logname}[{os.getpid()}]: {getuser()}: %(message)s"
             )
 

@@ -3,6 +3,11 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.16 (BOA fork, 2026-11-12)
+- Fix: each log record is one line of the log file or syslog. A control character in a typed or remote command is written as `\xNN` instead of itself, so a command holding a newline no longer starts a second line that a reader of the log takes for a record of its own. JSON audit records were already escaped.
+- Fix: a refusal that names one word of a longer line (a forbidden command, path or character) ends its log line with `in "<line>"`, the whole line it came from, so the log says what was typed around the refused word. The message the user sees is unchanged, and a line that is the refused word alone is logged as before.
+- Tests: the formatter on control characters, the checked line and tracebacks; refusals of a command, a path, a character and a control character through the parser, read back from a real log file.
+
 ### v0.11.15 (BOA fork, 2026-10-28)
 - Fix: a foreground command run from a terminal holds that terminal, so a prompt it opens on `/dev/tty` reaches the user again: an unknown host key (`git clone` over SSH failed with `Host key verification failed.`), a key passphrase, a git password. Since upstream's job control (0.10.10, and in this fork from its first release) every command started in a new session, which has no controlling terminal. A foreground command now leads its own process group in lshell's session and is handed the terminal for its run, as a job-control shell runs it: Ctrl+Z and Ctrl+C reach that group, lshell reads a stop from the wait status, `fg` hands the terminal back to the resumed job, and a dropped connection hangs the command up as it would under any shell. Background jobs (`&`), `sudo`/`su` and commands run without a terminal start as before.
 - Tests: a foreground command reads a line through `/dev/tty`, and a job stopped with Ctrl+Z and resumed with `fg` reads the terminal again.

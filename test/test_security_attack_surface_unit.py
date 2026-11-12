@@ -35,7 +35,7 @@ class DummyLog:
         """Record info-level messages."""
         self.messages.append(("info", message))
 
-    def critical(self, message):
+    def critical(self, message, **_kwargs):
         """Record critical-level messages."""
         self.messages.append(("critical", message))
 

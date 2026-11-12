@@ -16,7 +16,7 @@ CONFIG = f"{TOPDIR}/test/testfiles/test.conf"
 class DummyLog:
     """Minimal logger object for command parser tests."""
 
-    def critical(self, _message):
+    def critical(self, _message, **_kwargs):
         """No-op logger stub."""
 
 

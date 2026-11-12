@@ -10,6 +10,7 @@ import shlex
 import glob
 import fnmatch
 import itertools
+import contextlib
 
 # import lshell specifics
 from lshell import messages
@@ -17,6 +18,9 @@ from lshell import utils
 from lshell import audit
 
 EXTENSION_RESTRICTION_EXEMPT_COMMANDS = {"cd", "clear", "fg", "bg", "ls"}
+# The line being checked, kept for the log while a check runs: a refusal names
+# one token, and the token alone does not say what was typed around it.
+LOGGED_LINE_KEY = "_line_checked_for_log"
 MAX_WILDCARD_MATCHES = 4096
 WILDCARD_CHARS = re.compile(r"[*?[]")
 
@@ -50,10 +54,51 @@ def _split_command_for_auth(command_line):
     return command, args, full_command
 
 
+@contextlib.contextmanager
+def line_for_log(conf, line):
+    """Keep the line a refusal is logged with while it is checked.
+
+    The outermost line wins, so a nested check logs the whole typed line;
+    the key is removed when that outermost check ends.
+    """
+    if not isinstance(conf, dict) or conf.get(LOGGED_LINE_KEY):
+        yield
+        return
+    conf[LOGGED_LINE_KEY] = line
+    try:
+        yield
+    finally:
+        conf.pop(LOGGED_LINE_KEY, None)
+
+
+def _logged_line_extra(conf, command):
+    """Return the log record's extra naming the checked line, or None.
+
+    None when no line is kept or the line is the refused token itself, so
+    the record and its log line stay as before.
+    """
+    line = conf.get(LOGGED_LINE_KEY) if isinstance(conf, dict) else None
+    if not isinstance(line, str):
+        return None
+    line = line.strip()
+    if not line or line == str(command).strip():
+        return None
+    return {"lshell_line": line}
+
+
+def _log_refusal(log, message, extra):
+    """Log a refusal at CRITICAL, with the checked line when there is one."""
+    if extra:
+        log.critical(message, extra=extra)
+    else:
+        log.critical(message)
+
+
 def warn_count(messagetype, command, conf, strict=None, ssh=None):
     """Update the warning_counter, log and display a warning to the user"""
 
     log = conf["logpath"]
+    line_extra = _logged_line_extra(conf, command)
     if messagetype == "unknown syntax":
         primary_message = messages.get_message(
             conf, "unknown_syntax", command=command
@@ -69,11 +114,11 @@ def warn_count(messagetype, command, conf, strict=None, ssh=None):
 
     conf["warning_counter"] -= 1
     if conf["warning_counter"] < 0:
-        log.critical(primary_message)
+        _log_refusal(log, primary_message, line_extra)
         log.critical(messages.get_message(conf, "session_terminated"))
         sys.exit(1)
 
-    log.critical(primary_message)
+    _log_refusal(log, primary_message, line_extra)
     remaining = conf["warning_counter"]
     violation_label = "violation" if remaining == 1 else "violations"
     sys.stderr.write(
