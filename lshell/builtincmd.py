@@ -105,11 +105,15 @@ def cmd_lsudo(conf):
 # 127 that is not text as \M-X or \M^X; other bytes as they are
 LIBEDIT = "libedit" in (readline.__doc__ or "")
 LIBEDIT_HEADER = "_HiStOrY_V2_"
-LIBEDIT_VIS = re.compile(rb"\\(?:([0-7]{3})|\^(.)|M-(.)|M\^(.))", re.S)
+LIBEDIT_VIS = re.compile(rb"\\(?:([0-7]{3})|\^(.)|M-(.)|M\^(.))")
+# a line as libedit writes it: no raw blank or control byte, and every
+# backslash the start of one of its escapes
+LIBEDIT_LINE = re.compile(rb"(?:[^\\\x00-\x20\x7f]|\\(?:[0-7]{3}|\^.|M[-^].))*")
 
 
 def _control(char):
-    return 0x7F if char == 0x3F else char ^ 0x40
+    # as libedit's own reader (strunvis): \^? is DEL, \^X the low five bits
+    return 0x7F if char == 0x3F else char & 0x1F
 
 
 def _unvis_one(match):
@@ -124,10 +128,15 @@ def _unvis_one(match):
     return bytes([_control(metacontrol[0]) | 0x80])
 
 
+def unvis_bytes(raw):
+    """A line of libedit's history file, as bytes, as it was typed."""
+    return LIBEDIT_VIS.sub(_unvis_one, raw)
+
+
 def libedit_unvis(line, encoding):
     """A line of libedit's history file, read in encoding, as it was typed."""
     raw = line.encode(encoding, "surrogateescape")
-    return LIBEDIT_VIS.sub(_unvis_one, raw).decode(encoding, "surrogateescape")
+    return unvis_bytes(raw).decode(encoding, "surrogateescape")
 
 
 def write_history(conf):

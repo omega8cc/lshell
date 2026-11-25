@@ -9,6 +9,7 @@ import errno
 import io
 import sys
 import os
+import stat
 import tempfile
 import re
 import signal
@@ -46,20 +47,35 @@ def _read_headerless_libedit(exception, path):
 
     Before 0.11.19, libedit's own cut of the file to history_size dropped the
     header line its reader needs, so every later read was refused (EINVAL).
-    Such a file is read once more from a private copy with the header put
-    back in front; the session then takes it and writes it whole.
+    A regular file whose every line is in the form libedit writes (no raw
+    blank or control byte, every backslash an escape) is read once more from
+    a private copy beside it with the header put back in front; the session
+    then takes it and writes it whole. Any other file, such as a bash or GNU
+    readline history, is left alone.
     """
     if not builtincmd.LIBEDIT or getattr(exception, "errno", None) != errno.EINVAL:
         return False
     header = builtincmd.LIBEDIT_HEADER.encode() + b"\n"
     try:
         with io.open(path, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return False
             data = handle.read()
     except OSError:
         return False
     if not data or data.startswith(header):
         return False
-    handle_fd, copy = tempfile.mkstemp(prefix=".lshell-history-")
+    lines = data.split(b"\n")
+    if lines[-1] == b"":
+        lines.pop()
+    if not all(builtincmd.LIBEDIT_LINE.fullmatch(line) for line in lines):
+        return False
+    try:
+        handle_fd, copy = tempfile.mkstemp(
+            prefix=".lshell-history-", dir=os.path.dirname(path) or "."
+        )
+    except OSError:
+        return False
     try:
         with os.fdopen(handle_fd, "wb") as handle:
             handle.write(header + data)
@@ -393,10 +409,11 @@ class ShellCmd(cmd.Cmd, object):
 
         The session writes readline's list back only to the history file it
         loaded (history, and the end of the session), never over a file it
-        could not read, unless libedit refused it for being empty: it holds
-        nothing to lose (_libedit_empty_file). cmdloop() runs
-        again after a Ctrl-C that reaches cli.main; readline's list then
-        holds the file already.
+        could not read, with two exceptions on libedit: an empty file it
+        refused, which holds nothing to lose (_libedit_empty_file), and a
+        file of its own that lost its header line, which it reads again
+        (_read_headerless_libedit). cmdloop() runs again after a Ctrl-C that
+        reaches cli.main; readline's list then holds the file already.
         """
         if self.conf.get("_history_loaded"):
             return

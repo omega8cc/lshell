@@ -134,7 +134,8 @@ class TestHistoryBuiltin(unittest.TestCase):
                 history,
                 b"_HiStOrY_V2_\n"
                 b"a\\040b\\011c\nback\\134slash\nx\\134101\necho\\040\\134040\n"
-                b"ctl\\^Ax\ndel\\^?y\nm\\M^Az\ncaf\xc3\xa9\nx\xffy\n",
+                b"ctl\\^Ax\ndel\\^?y\nm\\M^Az\ncaf\xc3\xa9\nx\xffy\n"
+                b"caf\\M-C\\M-)\nq\\M^?\nz\\M-\\134\nlo\\^ax\n",
             )
             with patch("lshell.builtincmd.LIBEDIT", True):
                 retcode, output, write, _critical = self._history(
@@ -145,7 +146,8 @@ class TestHistoryBuiltin(unittest.TestCase):
         self.assertEqual(
             output,
             "1:  a b\tc\n2:  back\\slash\n3:  x\\101\n4:  echo \\040\n"
-            "5:  ctl\x01x\n6:  del\x7fy\n7:  m\udc81z\n8:  caf\u00e9\n9:  x\udcffy\n",
+            "5:  ctl\x01x\n6:  del\x7fy\n7:  m\udc81z\n8:  caf\u00e9\n9:  x\udcffy\n"
+            "10:  caf\u00e9\n11:  q\udcff\n12:  z\udcdc134\n13:  lo\x01x\n",
         )
 
     def test_loaded_libedit_session_cuts_before_listing(self):
@@ -387,12 +389,20 @@ class TestSessionLoad(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             history = os.path.join(home, "history")
             _write(history, b"echo\\0401\necho\\0402\n")
+            seen = []
+
+            def reads(path):
+                seen.append(_read(path))
+                if len(seen) == 1:
+                    raise OSError(22, "Invalid argument")
+
             with patch("lshell.builtincmd.LIBEDIT", True):
-                conf, read, opened, write = self._cmdloop(
-                    [OSError(22, "Invalid argument"), None], history=history
-                )
+                conf, read, opened, write = self._cmdloop(reads, history=history)
             copy = read.call_args_list[1][0][0]
             kept = _read(history)
+        # the copy beside the file held the header, then the file's own lines
+        self.assertEqual(seen[1], b"_HiStOrY_V2_\necho\\0401\necho\\0402\n")
+        self.assertEqual(os.path.dirname(copy), home)
         self.assertEqual(conf.get("_history_loaded"), history)
         self.assertEqual(read.call_count, 2)
         self.assertNotEqual(copy, history)
@@ -400,6 +410,36 @@ class TestSessionLoad(unittest.TestCase):
         self.assertEqual(kept, b"echo\\0401\necho\\0402\n")
         opened.assert_not_called()
         write.assert_called_once_with(history)
+
+    def test_other_headerless_file_is_left_alone(self):
+        """A bash or GNU readline history (raw blanks) is not taken on libedit."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, b"ls -la\nprintf 'a\\nb'\n")
+            with patch("lshell.builtincmd.LIBEDIT", True):
+                conf, read, _opened, write = self._cmdloop(
+                    [OSError(22, "Invalid argument")], history=history
+                )
+            kept = _read(history)
+        self.assertIsNone(conf.get("_history_loaded"))
+        read.assert_called_once_with(history)
+        write.assert_not_called()
+        self.assertEqual(kept, b"ls -la\nprintf 'a\\nb'\n")
+
+    def test_repair_is_not_tried_for_a_permission_refusal(self):
+        """On libedit a file refused for permission is left alone, unread."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, LINES)
+            with patch("lshell.builtincmd.LIBEDIT", True):
+                conf, read, _opened, write = self._cmdloop(
+                    [PermissionError(13, "Permission denied")], history=history
+                )
+            kept = _read(history)
+        self.assertIsNone(conf.get("_history_loaded"))
+        read.assert_called_once_with(history)
+        write.assert_not_called()
+        self.assertEqual(kept, LINES)
 
     def test_libedit_file_with_its_header_refused_is_left_alone(self):
         """A libedit file that has its header and is still refused is left alone."""
@@ -423,11 +463,9 @@ class TestSessionLoad(unittest.TestCase):
             _write(history, b"echo\\0401\necho\\0402\n")
             readline.clear_history()
             try:
-                with self.assertRaises(OSError):
+                with self.assertRaises(OSError) as raised:
                     readline.read_history_file(history)
-                loaded = shellcmd._read_headerless_libedit(
-                    OSError(22, "Invalid argument"), history
-                )
+                loaded = shellcmd._read_headerless_libedit(raised.exception, history)
                 items = [
                     readline.get_history_item(i)
                     for i in range(1, readline.get_current_history_length() + 1)
