@@ -100,11 +100,34 @@ def cmd_lsudo(conf):
 
 
 # libedit, the readline of macOS, keeps its own history file format: a header
-# line, then each line with a blank, a control character or a backslash
-# written as \ooo
+# line, then each line in vis(3) form: a blank, a tab, a newline or a
+# backslash as \ooo, a control character as \^X (\^? for DEL), a byte above
+# 127 that is not text as \M-X or \M^X; other bytes as they are
 LIBEDIT = "libedit" in (readline.__doc__ or "")
 LIBEDIT_HEADER = "_HiStOrY_V2_"
-LIBEDIT_ESCAPE = re.compile(r"\\([0-7]{3})")
+LIBEDIT_VIS = re.compile(rb"\\(?:([0-7]{3})|\^(.)|M-(.)|M\^(.))", re.S)
+
+
+def _control(char):
+    return 0x7F if char == 0x3F else char ^ 0x40
+
+
+def _unvis_one(match):
+    octal, control, meta, metacontrol = match.groups()
+    if octal is not None:
+        value = int(octal, 8)
+        return bytes([value]) if value < 256 else match.group(0)
+    if control is not None:
+        return bytes([_control(control[0])])
+    if meta is not None:
+        return bytes([meta[0] | 0x80])
+    return bytes([_control(metacontrol[0]) | 0x80])
+
+
+def libedit_unvis(line, encoding):
+    """A line of libedit's history file, read in encoding, as it was typed."""
+    raw = line.encode(encoding, "surrogateescape")
+    return LIBEDIT_VIS.sub(_unvis_one, raw).decode(encoding, "surrogateescape")
 
 
 def write_history(conf):
@@ -145,10 +168,7 @@ def cmd_history(conf, log):
         ) as history_file:
             items = history_file.readlines()
         if LIBEDIT and items and items[0].rstrip("\n") == LIBEDIT_HEADER:
-            items = [
-                LIBEDIT_ESCAPE.sub(lambda m: chr(int(m.group(1), 8)), item)
-                for item in items[1:]
-            ]
+            items = [libedit_unvis(item, encoding) for item in items[1:]]
         for i, item in enumerate(items, 1):
             sys.stdout.write(f"{i}:  {item}")
     except FileNotFoundError as exception:

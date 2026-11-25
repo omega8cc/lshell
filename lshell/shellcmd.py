@@ -6,8 +6,10 @@ security checks, logging, etc.
 
 import cmd
 import errno
+import io
 import sys
 import os
+import tempfile
 import re
 import signal
 import readline
@@ -37,6 +39,39 @@ def _libedit_empty_file(exception, path):
         return os.path.isfile(path) and os.path.getsize(path) == 0
     except OSError:
         return False
+
+
+def _read_headerless_libedit(exception, path):
+    """Load a libedit history file that lost its header line; True if loaded.
+
+    Before 0.11.19, libedit's own cut of the file to history_size dropped the
+    header line its reader needs, so every later read was refused (EINVAL).
+    Such a file is read once more from a private copy with the header put
+    back in front; the session then takes it and writes it whole.
+    """
+    if not builtincmd.LIBEDIT or getattr(exception, "errno", None) != errno.EINVAL:
+        return False
+    header = builtincmd.LIBEDIT_HEADER.encode() + b"\n"
+    try:
+        with io.open(path, "rb") as handle:
+            data = handle.read()
+    except OSError:
+        return False
+    if not data or data.startswith(header):
+        return False
+    handle_fd, copy = tempfile.mkstemp(prefix=".lshell-history-")
+    try:
+        with os.fdopen(handle_fd, "wb") as handle:
+            handle.write(header + data)
+        readline.read_history_file(copy)
+    except OSError:
+        return False
+    finally:
+        try:
+            os.unlink(copy)
+        except OSError:
+            pass
+    return True
 
 
 class ShellCmd(cmd.Cmd, object):
@@ -376,7 +411,10 @@ class ShellCmd(cmd.Cmd, object):
                 if not _libedit_empty_file(exception, history_file):
                     return
         except IOError as exception:
-            if not _libedit_empty_file(exception, history_file):
+            if not (
+                _libedit_empty_file(exception, history_file)
+                or _read_headerless_libedit(exception, history_file)
+            ):
                 return
         self.conf["_history_loaded"] = history_file
 
