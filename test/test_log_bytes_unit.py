@@ -3,6 +3,7 @@
 import io
 import logging
 import os
+import readline
 import subprocess
 import sys
 import tempfile
@@ -233,6 +234,9 @@ class TestEntryPointBytes(unittest.TestCase):
 
     def test_history_holding_such_a_byte(self):
         """history lists a line holding such a byte as it was typed."""
+        if "libedit" in (readline.__doc__ or ""):
+            # libedit refuses a history file without its own header line
+            self.skipTest("GNU readline's history file format")
         with tempfile.TemporaryDirectory() as home:
             history = os.path.join(home, "history")
             with open(history, "wb") as handle:
@@ -243,7 +247,7 @@ class TestEntryPointBytes(unittest.TestCase):
                 args=[f"--history_file='{history}'"],
             )
         self.assertNotIn(b"Traceback", output, output)
-        self.assertIn(b"ls /x", output)
+        self.assertIn(b"1:  ls /x\xffy\n", output)
 
     def test_script_line_holding_such_a_byte(self):
         """A .lsh script's line is checked and logged as a typed one is."""
