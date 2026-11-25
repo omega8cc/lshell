@@ -80,7 +80,7 @@ class TestHistorySizeUnit(unittest.TestCase):
 
         with patch(
             "lshell.shellcmd.readline.read_history_file",
-            side_effect=[IOError(), None],
+            side_effect=[FileNotFoundError(), None],
         ) as mock_read:
             with patch("lshell.shellcmd.open", mock_open()):
                 with patch("lshell.shellcmd.readline.set_history_length") as mock_len:

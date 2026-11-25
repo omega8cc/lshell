@@ -101,11 +101,12 @@ def cmd_lsudo(conf):
 
 def cmd_history(conf, log):
     """print the commands history"""
+    # Only a session that loaded the history file writes readline's list
+    # back first: a script or a single command loads nothing, so writing
+    # would replace the login's history with an empty list.
+    loaded = conf.get("_history_loaded")
     try:
-        # Only a session that loaded the history file writes readline's list
-        # back first: a script or a single command loads nothing, so writing
-        # would replace the login's history with an empty list.
-        if conf.get("_history_loaded"):
+        if loaded:
             try:
                 readline.write_history_file(conf["history_file"])
             except IOError:
@@ -113,8 +114,6 @@ def cmd_history(conf, log):
                     f"WARN: couldn't write history to file {conf['history_file']}\n"
                 )
                 return 1
-        elif not os.path.isfile(conf["history_file"]):
-            return 0
         # readline keeps each line's bytes as typed: read them in the
         # terminal's own encoding, a byte that is no part of a letter as a
         # surrogate, so each line is written back byte for byte
@@ -126,10 +125,15 @@ def cmd_history(conf, log):
             for item in history_file.readlines():
                 sys.stdout.write(f"{i}:  {item}")
                 i += 1
+    except FileNotFoundError as exception:
+        if not loaded:
+            # no history file yet: nothing to list
+            return 0
+        log.critical(f"** Unable to read the history file: {exception}")
+        return 1
     except (
         OSError,
         IOError,
-        FileNotFoundError,
     ) as exception:  # Catch specific exceptions
         log.critical(f"** Unable to read the history file: {exception}")
         return 1

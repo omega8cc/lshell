@@ -90,19 +90,7 @@ class ShellCmd(cmd.Cmd, object):
         """
 
         # in case the configuration file has been modified, reload it
-        if self.conf["config_mtime"] != os.path.getmtime(self.conf["configfile"]):
-            session_id = self.conf.get("session_id")
-            history_loaded = self.conf.get("_history_loaded")
-            self.conf = CheckConfig(
-                ["--config", self.conf["configfile"]], refresh=1
-            ).returnconf()
-            if session_id:
-                self.conf["session_id"] = session_id
-            if history_loaded:
-                # the history was loaded at login, not by the new config
-                self.conf["_history_loaded"] = True
-            self.conf["promptprint"] = utils.updateprompt(os.getcwd(), self.conf)
-            self.log = self.conf["logpath"]
+        self.reload_changed_config()
 
         if self.conf["timer"] > 0:
             self.mytimer(0)
@@ -330,6 +318,48 @@ class ShellCmd(cmd.Cmd, object):
         self.log.error("Exited")
         sys.exit(1)
 
+    def reload_changed_config(self):
+        """Reload the configuration file when it changed since it was read."""
+        if self.conf["config_mtime"] == os.path.getmtime(self.conf["configfile"]):
+            return
+        session_id = self.conf.get("session_id")
+        history_loaded = self.conf.get("_history_loaded")
+        self.conf = CheckConfig(
+            ["--config", self.conf["configfile"]], refresh=1
+        ).returnconf()
+        if session_id:
+            self.conf["session_id"] = session_id
+        if history_loaded:
+            # the session keeps the history file it loaded at login: the new
+            # config may name another, or drop a --history_file option
+            self.conf["_history_loaded"] = history_loaded
+            self.conf["history_file"] = history_loaded
+        self.conf["promptprint"] = utils.updateprompt(os.getcwd(), self.conf)
+        self.log = self.conf["logpath"]
+
+    def load_history(self):
+        """Read the history file into readline once a session, and mark it.
+
+        The session writes readline's list back only to the history file it
+        loaded (history, and the end of the session), never over a file it
+        could not read. cmdloop() runs again after a Ctrl-C that reaches
+        cli.main; readline's list then holds the file already.
+        """
+        if self.conf.get("_history_loaded"):
+            return
+        history_file = self.conf["history_file"]
+        try:
+            readline.read_history_file(history_file)
+        except FileNotFoundError:
+            try:
+                open(history_file, "a", encoding="utf-8").close()
+                readline.read_history_file(history_file)
+            except IOError:
+                return
+        except IOError:
+            return
+        self.conf["_history_loaded"] = history_file
+
     def run_script_mode(self, script):
         """Process commands from a script."""
         # A byte that is no part of a letter reaches the checks and the log
@@ -356,17 +386,7 @@ class ShellCmd(cmd.Cmd, object):
 
         self.preloop()
         if self.use_rawinput and self.completekey:
-            try:
-                readline.read_history_file(self.conf["history_file"])
-                self.conf["_history_loaded"] = True
-            except IOError:
-                # if history file does not exist
-                try:
-                    open(self.conf["history_file"], "w").close()
-                    readline.read_history_file(self.conf["history_file"])
-                    self.conf["_history_loaded"] = True
-                except IOError:
-                    pass
+            self.load_history()
             readline.set_history_length(self.conf["history_size"])
             readline.set_completer_delims(
                 readline.get_completer_delims().replace("-", "")
@@ -460,12 +480,14 @@ class ShellCmd(cmd.Cmd, object):
                     readline.set_completer(self.old_completer)
                 except ImportError:
                     pass
-            try:
-                readline.write_history_file(self.conf["history_file"])
-            except IOError:
-                self.log.error(
-                    f"WARN: couldn't write history to file {self.conf['history_file']}\n"
-                )
+            if self.conf.get("_history_loaded"):
+                try:
+                    readline.write_history_file(self.conf["history_file"])
+                except IOError:
+                    self.log.error(
+                        "WARN: couldn't write history to file "
+                        f"{self.conf['history_file']}\n"
+                    )
 
     def complete(self, text, state):
         """Return the next possible completion for 'text'.
