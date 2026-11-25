@@ -140,6 +140,55 @@ class TestHistoryFileKept(unittest.TestCase):
         self.assertIn(LISTED, output)
         self.assertEqual(kept, LINES)
 
+    def test_history_after_a_config_reload(self):
+        """A terminal session still lists what it typed after its config reloads."""
+        _gnu_readline_only(self)
+        try:
+            import pexpect  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            self.skipTest("pexpect is not installed")
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            config = os.path.join(home, "lshell.conf")
+            with open(config, "w", encoding="utf-8") as handle:
+                # the reload reads this file alone, so it names the log
+                # folder and the history file itself
+                handle.write(
+                    "[global]\n"
+                    f"logpath : {home}/\n"
+                    "loglevel : 2\n"
+                    "[default]\n"
+                    "allowed : ['echo']\n"
+                    "forbidden : [';', '&', '|', '`', '>', '<', '$(', '${']\n"
+                    "warning_counter : 2\n"
+                    "strict : 0\n"
+                    f"history_file : '{history}'\n"
+                )
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith(("PYTHON", "SSH_", "LSHELL_"))
+            }
+            env["PYTHONPATH"] = TOPDIR
+            child = pexpect.spawn(
+                sys.executable, [LSHELL, f"--config={config}"], env=env, timeout=30
+            )
+            try:
+                child.expect(r"\$ ")
+                child.sendline("echo lbr-typed")
+                child.expect(r"\$ ")
+                stamp = os.path.getmtime(config) + 10
+                os.utime(config, (stamp, stamp))
+                child.sendline("history")
+                child.expect(r"\$ ")
+                listed = child.before.decode("utf-8", "replace")
+                child.sendline("exit")
+                child.expect(pexpect.EOF)
+            finally:
+                child.close()
+        self.assertNotIn("Traceback", listed, listed)
+        self.assertRegex(listed, r"\d+:  echo lbr-typed")
+
     def test_session_history_keeps_the_file(self):
         """A session reading its lines from a pipe keeps the loaded lines."""
         _gnu_readline_only(self)

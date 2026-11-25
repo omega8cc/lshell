@@ -92,11 +92,15 @@ class ShellCmd(cmd.Cmd, object):
         # in case the configuration file has been modified, reload it
         if self.conf["config_mtime"] != os.path.getmtime(self.conf["configfile"]):
             session_id = self.conf.get("session_id")
+            history_loaded = self.conf.get("_history_loaded")
             self.conf = CheckConfig(
                 ["--config", self.conf["configfile"]], refresh=1
             ).returnconf()
             if session_id:
                 self.conf["session_id"] = session_id
+            if history_loaded:
+                # the history was loaded at login, not by the new config
+                self.conf["_history_loaded"] = True
             self.conf["promptprint"] = utils.updateprompt(os.getcwd(), self.conf)
             self.log = self.conf["logpath"]
 

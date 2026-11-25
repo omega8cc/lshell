@@ -4,8 +4,8 @@ Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
 ### v0.11.18 (BOA fork, 2026-11-25)
-- Fix: `history` in a `.lsh` script or in a single command (`lshell -c history`, as a command over an SSH terminal runs) no longer empties the login's history file. Such a run never loads the history, and the builtin wrote readline's empty list over the file before listing it. It now writes readline's list back only in a session that loaded the file, and otherwise lists the file as it stands; an interactive session keeps the commands it typed in the listing as before.
-- Tests: `history` with and without a loaded history, in a script, in a single command and in a session reading its lines from a pipe, each keeping the history file.
+- Fix: `history` in a `.lsh` script or in a single command (`lshell -c history`, as a command over an SSH terminal runs) no longer empties the login's history file. Such a run never loads the history, and the builtin wrote readline's empty list over the file before listing it. It now writes readline's list back only in a session that loaded the file, and otherwise lists the file as it stands; an interactive session keeps the commands it typed in the listing as before, also after its configuration file changed and was reloaded.
+- Tests: `history` with and without a loaded history, in a script, in a single command and in a session reading its lines from a pipe, each keeping the history file, and in a terminal session after a configuration reload.
 
 ### v0.11.17 (BOA fork, 2026-11-25)
 - Fix: a refused line that holds a byte which is no part of a letter in the terminal's character set is logged again. Python keeps such a byte as a surrogate, which the log handler could not write in a UTF-8 locale, so the record was lost and logging printed a traceback on the user's terminal. The log file and syslog now write such a byte as `\xNN`, the form already used for control characters, and the log file is UTF-8 in any locale: a letter typed in an ISO-8859 terminal is logged as that letter.
