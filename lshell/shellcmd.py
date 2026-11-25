@@ -354,11 +354,13 @@ class ShellCmd(cmd.Cmd, object):
         if self.use_rawinput and self.completekey:
             try:
                 readline.read_history_file(self.conf["history_file"])
+                self.conf["_history_loaded"] = True
             except IOError:
                 # if history file does not exist
                 try:
                     open(self.conf["history_file"], "w").close()
                     readline.read_history_file(self.conf["history_file"])
+                    self.conf["_history_loaded"] = True
                 except IOError:
                     pass
             readline.set_history_length(self.conf["history_size"])
