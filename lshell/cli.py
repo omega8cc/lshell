@@ -15,6 +15,28 @@ from lshell.checkconfig import CheckConfig
 from lshell.shellcmd import LshellTimeOut, ShellCmd
 
 
+def keep_undecodable_bytes(streams=None):
+    """Read and write a byte that is no part of a letter as a surrogate.
+
+    In a locale such as en_US.UTF-8 Python decodes the terminal strictly, so
+    a typed byte that is not valid there raised UnicodeDecodeError out of
+    input() and ended the session before the line was checked or logged.
+    With surrogateescape the byte travels as Python's C.UTF-8 and UTF-8 mode
+    already carry it: the checks read it, a command gets the byte back, an
+    echo of it reaches the terminal as typed, and the log writes it as \\xNN.
+    """
+    if streams is None:
+        streams = (sys.stdin, sys.stdout)
+    for stream in streams:
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="surrogateescape")
+        except (AttributeError, OSError, TypeError, ValueError):
+            pass
+
+
 def main():
     """Main CLI entry point."""
     if len(sys.argv) > 1 and sys.argv[1] == "policy-show":
@@ -23,6 +45,8 @@ def main():
         sys.exit(system_setup.main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "harden-init":
         sys.exit(harden_init.main(sys.argv[2:]))
+
+    keep_undecodable_bytes()
 
     # Set SHELL and process LSHELL_ARGS env variables.
     os.environ["SHELL"] = os.path.realpath(sys.argv[0])

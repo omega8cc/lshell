@@ -24,11 +24,17 @@ from lshell import audit
 from lshell import containment
 
 
-LOG_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+LOG_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f\ud800-\udfff]")
 
 
 def _escape_log_control_char(match):
-    return f"\\x{ord(match.group()):02x}"
+    code = ord(match.group())
+    if 0xDC80 <= code <= 0xDCFF:
+        # A byte that is no part of a letter, kept by surrogateescape.
+        code -= 0xDC00
+    elif code > 0x7F:
+        return f"\\u{code:04x}"
+    return f"\\x{code:02x}"
 
 
 class OneLineFormatter(logging.Formatter):
@@ -36,6 +42,9 @@ class OneLineFormatter(logging.Formatter):
 
     Log files and syslog are read line by line, so a control character in a
     typed or remote command is written as \\xNN and never starts a new line.
+    A byte that is no part of a letter, which Python holds as a surrogate,
+    is written as \\xNN too, so every record is valid UTF-8 and reaches the
+    log instead of failing in the handler.
     A refusal record that carries ``lshell_line`` ends with ``in "<line>"``,
     the whole line the refused token came from.
     """
@@ -329,8 +338,9 @@ class CheckConfig:
                         os.chmod(logfile, 0o600)
                     except OSError:
                         pass
-                    # set logging handler
-                    self.logfile = logging.FileHandler(logfile)
+                    # set logging handler; UTF-8 in any locale, as the
+                    # formatter leaves nothing that UTF-8 cannot encode
+                    self.logfile = logging.FileHandler(logfile, encoding="utf-8")
                     self.logfile.setFormatter(formatter)
                     self.logfile.setLevel(self.levels[self.conf["loglevel"]])
                     logger.addHandler(self.logfile)

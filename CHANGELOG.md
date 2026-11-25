@@ -3,6 +3,11 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.17 (BOA fork, 2026-11-25)
+- Fix: a refused line that holds a byte which is no part of a letter in the terminal's character set is logged again. Python keeps such a byte as a surrogate, which the log handler could not write in a UTF-8 locale, so the record was lost and logging printed a traceback on the user's terminal. The log file and syslog now write such a byte as `\xNN`, the form already used for control characters, and the log file is UTF-8 in any locale: a letter typed in an ISO-8859 terminal is logged as that letter.
+- Fix: in a UTF-8 locale that Python decodes strictly, such as en_US.UTF-8, typing such a byte no longer ends the session with a traceback before the line is checked. lshell reads and writes the terminal with surrogateescape, as Python already does in the C and C.UTF-8 locales, so the line is checked, refused or run, and logged like any other; a command gets the byte as typed.
+- Tests: the formatter on such bytes, a refusal read back from a real log file, and the shell itself with a line typed under strict UTF-8 decoding, in UTF-8 mode and in a single-byte character set, and with a command over SSH.
+
 ### v0.11.16 (BOA fork, 2026-11-12)
 - Fix: each log record is one line of the log file or syslog. A control character in a typed or remote command is written as `\xNN` instead of itself, so a command holding a newline no longer starts a second line that a reader of the log takes for a record of its own. JSON audit records were already escaped.
 - Fix: a refusal that names one word of a longer line (a forbidden command, path or character) ends its log line with `in "<line>"`, the whole line it came from, so the log says what was typed around the refused word. The message the user sees is unchanged, and a line that is the refused word alone is logged as before.
