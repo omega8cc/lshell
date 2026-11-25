@@ -3,6 +3,10 @@
 Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)  
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
+### v0.11.19 (BOA fork, 2026-11-25)
+- Fix: with libedit, the readline of macOS, a login's history is saved again. libedit cannot read an empty history file, so since 0.11.18 a new login's file stayed empty and no session wrote to it. A session now takes a history file it could not read when that file is empty, as nothing in it can be lost. GNU readline, which BOA uses, reads an empty file and behaves as before.
+- Tests: every test starts with the environment and working folder the suite started with, so a configuration loaded by one test no longer hands its arguments to a real lshell that a later test starts, and the suite passes in any order; the libedit cases of the history file.
+
 ### v0.11.18 (BOA fork, 2026-11-25)
 - Fix: `history` in a `.lsh` script or in a single command (`lshell -c history`, as a command over an SSH terminal runs) no longer empties the login's history file. Such a run never loads the history, and the builtin wrote readline's empty list over the file before listing it. It now writes readline's list back only in a session that loaded the file, and otherwise lists the file as it stands; an interactive session keeps the commands it typed in the listing as before.
 - Fix: a session keeps the history file it loaded when its configuration file changes and is reloaded. The reload reads the configuration file alone, so a `--history_file` given on the command line, or a path changed in the file, sent the session's history over another file.

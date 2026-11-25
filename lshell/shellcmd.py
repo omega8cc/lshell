@@ -23,6 +23,14 @@ from lshell import policy as policy_mode
 from lshell import audit
 
 
+def _empty_file(path):
+    """True for a regular file of no bytes: nothing in it to lose."""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) == 0
+    except OSError:
+        return False
+
+
 class ShellCmd(cmd.Cmd, object):
     """Main lshell CLI class"""
 
@@ -342,8 +350,10 @@ class ShellCmd(cmd.Cmd, object):
 
         The session writes readline's list back only to the history file it
         loaded (history, and the end of the session), never over a file it
-        could not read. cmdloop() runs again after a Ctrl-C that reaches
-        cli.main; readline's list then holds the file already.
+        could not read, unless that file is empty: libedit cannot read an
+        empty history file, and it holds nothing to lose. cmdloop() runs
+        again after a Ctrl-C that reaches cli.main; readline's list then
+        holds the file already.
         """
         if self.conf.get("_history_loaded"):
             return
@@ -355,9 +365,11 @@ class ShellCmd(cmd.Cmd, object):
                 open(history_file, "a", encoding="utf-8").close()
                 readline.read_history_file(history_file)
             except IOError:
-                return
+                if not _empty_file(history_file):
+                    return
         except IOError:
-            return
+            if not _empty_file(history_file):
+                return
         self.conf["_history_loaded"] = history_file
 
     def run_script_mode(self, script):

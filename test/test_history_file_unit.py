@@ -135,8 +135,10 @@ class TestSessionLoad(unittest.TestCase):
             stderr=io.StringIO(),
         )
 
-    def _cmdloop(self, read_effect, runs=1):
+    def _cmdloop(self, read_effect, runs=1, history=None):
         shell = self._shell()
+        if history is not None:
+            shell.conf["history_file"] = history
         with ExitStack() as stack:
             read = stack.enter_context(
                 patch(
@@ -191,11 +193,43 @@ class TestSessionLoad(unittest.TestCase):
 
     def test_unreadable_file_is_left_alone(self):
         """A file that cannot be read is neither emptied nor written over."""
-        conf, read, opened, write = self._cmdloop([PermissionError()])
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, LINES)
+            conf, read, opened, write = self._cmdloop(
+                [PermissionError()], history=history
+            )
         self.assertIsNone(conf.get("_history_loaded"))
-        read.assert_called_once_with(conf["history_file"])
+        read.assert_called_once_with(history)
         opened.assert_not_called()
         write.assert_not_called()
+
+    def test_unreadable_empty_file_is_taken(self):
+        """An empty file readline cannot read (libedit) holds nothing to lose."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, b"")
+            conf, read, opened, write = self._cmdloop(
+                [OSError(22, "Invalid argument")], history=history
+            )
+        self.assertEqual(conf.get("_history_loaded"), history)
+        read.assert_called_once_with(history)
+        opened.assert_not_called()
+        write.assert_called_once_with(history)
+
+    def test_new_file_readline_cannot_read_is_taken(self):
+        """A file just made, which libedit cannot read empty, is the session's."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            # stands in for the file the mocked open makes
+            _write(history, b"")
+            conf, read, opened, write = self._cmdloop(
+                [FileNotFoundError(), OSError(22, "Invalid argument")], history=history
+            )
+        self.assertEqual(conf.get("_history_loaded"), history)
+        self.assertEqual(read.call_count, 2)
+        opened.assert_called_once_with(history, "a", encoding="utf-8")
+        write.assert_called_once_with(history)
 
     def test_cmdloop_run_again_reads_the_file_once(self):
         """cmdloop() run again (after a Ctrl-C) does not load the file twice."""
@@ -298,6 +332,29 @@ class TestHistoryFileKept(unittest.TestCase):
         self.assertIn(b"lbr-unreadable", output.replace(b"echo lbr-unreadable", b""))
         self.assertEqual(retcode, 0, output)
         self.assertEqual(kept, LINES)
+
+    def test_new_history_file_is_readable_next_time(self):
+        """A login's first session leaves a history file its readline can read.
+
+        GNU readline reads the empty file it starts with; libedit cannot, so
+        the session must still write its own list there at its end.
+        """
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            output, retcode = self._run(history, [], stdin=b"exit\n")
+            made = os.path.exists(history)
+            readline.clear_history()
+            try:
+                readline.read_history_file(history)
+                readable = True
+            except OSError:
+                readable = False
+            finally:
+                readline.clear_history()
+        self.assertNotIn(b"Traceback", output, output)
+        self.assertEqual(retcode, 0, output)
+        self.assertTrue(made)
+        self.assertTrue(readable)
 
     def test_piped_session_keeps_the_file(self):
         """A session reading a pipe lists the loaded lines and keeps them.
