@@ -120,6 +120,84 @@ class TestHistoryBuiltin(unittest.TestCase):
         write.assert_called_once_with(history)
         self.assertEqual(output, LISTED.decode() + "3:  echo typed\n")
 
+    def test_libedit_file_is_listed_as_typed(self):
+        """libedit's header line is not listed and its \\ooo escapes are read."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, b"_HiStOrY_V2_\na\\040b\nback\\134slash\ncaf\xc3\xa9\n")
+            with patch("lshell.builtincmd.LIBEDIT", True):
+                retcode, output, write, _critical = self._history(
+                    {"history_file": history}
+                )
+        self.assertEqual(retcode, 0)
+        write.assert_not_called()
+        self.assertEqual(output, "1:  a b\n2:  back\\slash\n3:  café\n")
+
+    def test_gnu_listing_keeps_a_header_like_line(self):
+        """On GNU readline the file is listed as it stands, every line."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, b"_HiStOrY_V2_\na\\040b\n")
+            with patch("lshell.builtincmd.LIBEDIT", False):
+                retcode, output, _write_mock, _critical = self._history(
+                    {"history_file": history}
+                )
+        self.assertEqual(retcode, 0)
+        self.assertEqual(output, "1:  _HiStOrY_V2_\n2:  a\\040b\n")
+
+
+class TestWriteHistory(unittest.TestCase):
+    """write_history keeps a libedit file readable whatever history_size is."""
+
+    def setUp(self):
+        readline.clear_history()
+
+    def tearDown(self):
+        readline.clear_history()
+        readline.set_history_length(-1)
+
+    def _items(self):
+        return [
+            readline.get_history_item(i)
+            for i in range(1, readline.get_current_history_length() + 1)
+        ]
+
+    def test_libedit_cuts_the_list_not_the_file(self):
+        """On libedit the list is cut to history_size before it is written."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            for i in range(5):
+                readline.add_history(f"echo {i}")
+            with patch("lshell.builtincmd.LIBEDIT", True):
+                builtincmd.write_history({"history_file": history, "history_size": 3})
+        self.assertEqual(self._items(), ["echo 2", "echo 3", "echo 4"])
+
+    def test_gnu_leaves_the_list_to_readline(self):
+        """On GNU readline the list is left whole; readline cuts the file."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            for i in range(5):
+                readline.add_history(f"echo {i}")
+            with patch("lshell.builtincmd.LIBEDIT", False):
+                builtincmd.write_history({"history_file": history, "history_size": 3})
+        self.assertEqual(len(self._items()), 5)
+
+    def test_real_libedit_file_reads_back_after_a_cut(self):
+        """With libedit itself, a file cut to history_size keeps its header."""
+        if not builtincmd.LIBEDIT:
+            self.skipTest("libedit's own file format")
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            for i in range(5):
+                readline.add_history(f"echo {i}")
+            readline.set_history_length(-1)
+            builtincmd.write_history({"history_file": history, "history_size": 3})
+            readline.clear_history()
+            readline.read_history_file(history)
+            first = _read(history).split(b"\n", 1)[0]
+        self.assertEqual(first, b"_HiStOrY_V2_")
+        self.assertEqual(self._items(), ["echo 2", "echo 3", "echo 4"])
+
 
 class TestSessionLoad(unittest.TestCase):
     """cmdloop marks the session only when it read the history file."""
@@ -202,6 +280,34 @@ class TestSessionLoad(unittest.TestCase):
         self.assertIsNone(conf.get("_history_loaded"))
         read.assert_called_once_with(history)
         opened.assert_not_called()
+        write.assert_not_called()
+
+    def test_empty_file_refused_otherwise_is_left_alone(self):
+        """An empty file refused for another reason (permission) is left alone."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            _write(history, b"")
+            conf, read, opened, write = self._cmdloop(
+                [PermissionError(13, "Permission denied")], history=history
+            )
+        self.assertIsNone(conf.get("_history_loaded"))
+        read.assert_called_once_with(history)
+        opened.assert_not_called()
+        write.assert_not_called()
+
+    def test_new_file_that_cannot_be_read_is_left_alone(self):
+        """A file made at login and then refused, holding lines, is left alone."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            # what the file holds by the time it is read back
+            _write(history, LINES)
+            conf, read, opened, write = self._cmdloop(
+                [FileNotFoundError(), PermissionError(13, "Permission denied")],
+                history=history,
+            )
+        self.assertIsNone(conf.get("_history_loaded"))
+        self.assertEqual(read.call_count, 2)
+        opened.assert_called_once_with(history, "a", encoding="utf-8")
         write.assert_not_called()
 
     def test_unreadable_empty_file_is_taken(self):

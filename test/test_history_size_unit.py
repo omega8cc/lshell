@@ -5,6 +5,7 @@ import os
 import unittest
 from unittest.mock import mock_open, patch
 
+from lshell import builtincmd
 from lshell.checkconfig import CheckConfig
 from lshell.shellcmd import ShellCmd
 
@@ -64,7 +65,8 @@ class TestHistorySizeUnit(unittest.TestCase):
                                                 shell.cmdloop()
 
         mock_read.assert_called_once_with(conf["history_file"])
-        mock_len.assert_called_once_with(25)
+        # on libedit write_history() cuts the list itself (see builtincmd)
+        mock_len.assert_called_once_with(-1 if builtincmd.LIBEDIT else 25)
 
     def test_cmdloop_applies_history_size_when_history_file_missing(self):
         """Still apply history length when history file must be created first."""
@@ -104,7 +106,7 @@ class TestHistorySizeUnit(unittest.TestCase):
                                                     shell.cmdloop()
 
         self.assertEqual(mock_read.call_count, 2)
-        mock_len.assert_called_once_with(11)
+        mock_len.assert_called_once_with(-1 if builtincmd.LIBEDIT else 11)
 
 
 if __name__ == "__main__":

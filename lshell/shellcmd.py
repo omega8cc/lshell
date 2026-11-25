@@ -5,6 +5,7 @@ security checks, logging, etc.
 """
 
 import cmd
+import errno
 import sys
 import os
 import re
@@ -23,8 +24,15 @@ from lshell import policy as policy_mode
 from lshell import audit
 
 
-def _empty_file(path):
-    """True for a regular file of no bytes: nothing in it to lose."""
+def _libedit_empty_file(exception, path):
+    """True when readline refused an empty regular file the way libedit does.
+
+    libedit cannot read an empty history file (errno EINVAL), and such a file
+    holds nothing to lose; any other refusal, such as permission denied, is
+    left as it is.
+    """
+    if getattr(exception, "errno", None) != errno.EINVAL:
+        return False
     try:
         return os.path.isfile(path) and os.path.getsize(path) == 0
     except OSError:
@@ -350,8 +358,8 @@ class ShellCmd(cmd.Cmd, object):
 
         The session writes readline's list back only to the history file it
         loaded (history, and the end of the session), never over a file it
-        could not read, unless that file is empty: libedit cannot read an
-        empty history file, and it holds nothing to lose. cmdloop() runs
+        could not read, unless libedit refused it for being empty: it holds
+        nothing to lose (_libedit_empty_file). cmdloop() runs
         again after a Ctrl-C that reaches cli.main; readline's list then
         holds the file already.
         """
@@ -364,11 +372,11 @@ class ShellCmd(cmd.Cmd, object):
             try:
                 open(history_file, "a", encoding="utf-8").close()
                 readline.read_history_file(history_file)
-            except IOError:
-                if not _empty_file(history_file):
+            except IOError as exception:
+                if not _libedit_empty_file(exception, history_file):
                     return
-        except IOError:
-            if not _empty_file(history_file):
+        except IOError as exception:
+            if not _libedit_empty_file(exception, history_file):
                 return
         self.conf["_history_loaded"] = history_file
 
@@ -399,7 +407,11 @@ class ShellCmd(cmd.Cmd, object):
         self.preloop()
         if self.use_rawinput and self.completekey:
             self.load_history()
-            readline.set_history_length(self.conf["history_size"])
+            # on libedit the list is cut by write_history(): libedit's own cut
+            # of the file loses the header line it needs to read it back
+            readline.set_history_length(
+                -1 if builtincmd.LIBEDIT else self.conf["history_size"]
+            )
             readline.set_completer_delims(
                 readline.get_completer_delims().replace("-", "")
             )
@@ -494,7 +506,7 @@ class ShellCmd(cmd.Cmd, object):
                     pass
             if self.conf.get("_history_loaded"):
                 try:
-                    readline.write_history_file(self.conf["history_file"])
+                    builtincmd.write_history(self.conf)
                 except IOError:
                     self.log.error(
                         "WARN: couldn't write history to file "

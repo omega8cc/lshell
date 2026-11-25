@@ -4,8 +4,10 @@ Contact: [ghantoos@ghantoos.org](mailto:ghantoos@ghantoos.org)
 [https://github.com/ghantoos/lshell](https://github.com/ghantoos/lshell)
 
 ### v0.11.19 (BOA fork, 2026-11-25)
-- Fix: with libedit, the readline of macOS, a login's history is saved again. libedit cannot read an empty history file, so since 0.11.18 a new login's file stayed empty and no session wrote to it. A session now takes a history file it could not read when that file is empty, as nothing in it can be lost. GNU readline, which BOA uses, reads an empty file and behaves as before.
-- Tests: every test starts with the environment and working folder the suite started with, so a configuration loaded by one test no longer hands its arguments to a real lshell that a later test starts, and the suite passes in any order; the libedit cases of the history file.
+- Fix: with libedit, the readline of macOS, a login's history is saved again. libedit cannot read an empty history file, so since 0.11.18 a new login's file stayed empty and no session wrote to it. A session now takes an empty history file that libedit refused for being empty, as nothing in it can be lost; a file refused for any other reason is left alone as before. GNU readline, which BOA uses, reads an empty file and behaves as before.
+- Fix: with libedit and `history_size` set, the history file stays readable. libedit's own cut of the file kept its last lines and dropped the header line its reader needs, after which no session read the file again; lshell now cuts the list to `history_size` before it writes.
+- Fix: with libedit, `history` lists the lines as they were typed, without libedit's header line and with its `\ooo` escapes read back.
+- Tests: every test starts from the suite's own environment, in the user's home, whatever ran before, so a configuration loaded by one test (or while a module is collected) no longer hands its arguments to a real lshell that a later test starts; the suite passes in any order, and a single test file runs as in the whole suite. The libedit cases of the history file.
 
 ### v0.11.18 (BOA fork, 2026-11-25)
 - Fix: `history` in a `.lsh` script or in a single command (`lshell -c history`, as a command over an SSH terminal runs) no longer empties the login's history file. Such a run never loads the history, and the builtin wrote readline's empty list over the file before listing it. It now writes readline's list back only in a session that loaded the file, and otherwise lists the file as it stands; an interactive session keeps the commands it typed in the listing as before.

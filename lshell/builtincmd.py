@@ -99,6 +99,28 @@ def cmd_lsudo(conf):
     return 1
 
 
+# libedit, the readline of macOS, keeps its own history file format: a header
+# line, then each line with a blank, a control character or a backslash
+# written as \ooo
+LIBEDIT = "libedit" in (readline.__doc__ or "")
+LIBEDIT_HEADER = "_HiStOrY_V2_"
+LIBEDIT_ESCAPE = re.compile(r"\\([0-7]{3})")
+
+
+def write_history(conf):
+    """Write readline's list to the session's history file.
+
+    On libedit the list itself is cut to history_size first: libedit's own
+    cut of the file keeps its last lines and drops the header line its reader
+    needs, after which no session could read the file again.
+    """
+    size = conf.get("history_size", -1)
+    if LIBEDIT and isinstance(size, int) and size >= 0:
+        while readline.get_current_history_length() > size:
+            readline.remove_history_item(0)
+    readline.write_history_file(conf["history_file"])
+
+
 def cmd_history(conf, log):
     """print the commands history"""
     # Only a session that loaded the history file writes readline's list
@@ -108,7 +130,7 @@ def cmd_history(conf, log):
     try:
         if loaded:
             try:
-                readline.write_history_file(conf["history_file"])
+                write_history(conf)
             except IOError:
                 log.error(
                     f"WARN: couldn't write history to file {conf['history_file']}\n"
@@ -121,10 +143,14 @@ def cmd_history(conf, log):
         with open(
             conf["history_file"], "r", encoding=encoding, errors="surrogateescape"
         ) as history_file:
-            i = 1
-            for item in history_file.readlines():
-                sys.stdout.write(f"{i}:  {item}")
-                i += 1
+            items = history_file.readlines()
+        if LIBEDIT and items and items[0].rstrip("\n") == LIBEDIT_HEADER:
+            items = [
+                LIBEDIT_ESCAPE.sub(lambda m: chr(int(m.group(1), 8)), item)
+                for item in items[1:]
+            ]
+        for i, item in enumerate(items, 1):
+            sys.stdout.write(f"{i}:  {item}")
     except FileNotFoundError as exception:
         if not loaded:
             # no history file yet: nothing to list
