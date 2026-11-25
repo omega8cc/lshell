@@ -10,6 +10,7 @@ import unittest
 from contextlib import redirect_stderr
 from getpass import getuser
 
+from lshell import builtincmd
 from lshell import cli
 from lshell import utils
 from lshell.checkconfig import CheckConfig, OneLineFormatter
@@ -98,18 +99,6 @@ class TestLogFileBytes(unittest.TestCase):
                 + [EMPTY_PATH]
             ).returnconf()
         return conf, stderr
-
-    def test_log_file_is_opened_as_utf8(self):
-        """The log is UTF-8 whatever the locale's encoding."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            conf, _stderr = self._session(tmpdir)
-            handlers = [
-                handler
-                for handler in conf["logpath"].handlers
-                if isinstance(handler, logging.FileHandler)
-            ]
-            self.assertEqual(len(handlers), 1, handlers)
-            self.assertEqual(handlers[0].encoding, "utf-8")
 
     def test_refused_path_with_byte_is_logged(self):
         """The refusal and its line reach the log, the byte as \\xNN."""
@@ -202,7 +191,11 @@ class TestEntryPointBytes(unittest.TestCase):
         self.assertRegex(text, r'CMD: "[^"]*ls[^"]* /x\\xffy"')
 
     def test_typed_line_in_single_byte_charset(self):
-        """An ISO-8859 terminal: the byte is a letter, logged as UTF-8."""
+        """An ISO-8859 terminal: the byte is a letter, logged as UTF-8.
+
+        The locale's own encoding is ASCII here (no UTF-8 mode, no locale
+        coercion), so this also proves the log file is opened as UTF-8.
+        """
         output, text = self._run(
             {
                 "PYTHONUTF8": "0",
@@ -222,6 +215,63 @@ class TestEntryPointBytes(unittest.TestCase):
         self.assertNotIn(b"Traceback", output, output)
         self.assertNotIn(b"Logging error", output, output)
         self.assertIn('lshell: forbidden path over SSH: "ls /x\\xffy"', text)
+
+    def test_prompt_in_a_folder_named_with_such_a_byte(self):
+        """The prompt naming such a folder is written under strict UTF-8."""
+        with tempfile.TemporaryDirectory() as home:
+            try:
+                os.mkdir(os.path.join(os.fsencode(home), b"d\xff"))
+            except OSError:
+                self.skipTest("this filesystem refuses a name that is not UTF-8")
+            output, _text = self._run(
+                {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8:strict"},
+                stdin=b"cd d\xff\nexit\n",
+                args=[f"--home_path='{home}'"],
+            )
+        self.assertNotIn(b"Traceback", output, output)
+        self.assertIn(b"/d\xff$", output)
+
+    def test_history_holding_such_a_byte(self):
+        """history lists a line holding such a byte as it was typed."""
+        with tempfile.TemporaryDirectory() as home:
+            history = os.path.join(home, "history")
+            with open(history, "wb") as handle:
+                handle.write(b"ls /x\xffy\n")
+            output, _text = self._run(
+                {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8:strict"},
+                stdin=b"history\nexit\n",
+                args=[f"--history_file='{history}'"],
+            )
+        self.assertNotIn(b"Traceback", output, output)
+        self.assertIn(b"ls /x", output)
+
+    def test_script_line_holding_such_a_byte(self):
+        """A .lsh script's line is checked and logged as a typed one is."""
+        with tempfile.TemporaryDirectory() as home:
+            script = os.path.join(home, "lines.lsh")
+            with open(script, "wb") as handle:
+                handle.write(b"ls /x\xffy\n")
+            output, text = self._run({"PYTHONUTF8": "1"}, args=[script])
+        self._assert_logged(output, text, "\\xff")
+
+
+class TestSourceBytes(unittest.TestCase):
+    """source reads a file holding such a byte."""
+
+    def test_source_file_holding_such_a_byte(self):
+        """The export is taken, the byte kept, and nothing raises."""
+        with tempfile.TemporaryDirectory() as home:
+            envfile = os.path.join(home, "env")
+            with open(envfile, "wb") as handle:
+                handle.write(b"export LSHELL_TEST_BYTES=x\xffy\n")
+            try:
+                with redirect_stderr(io.StringIO()):
+                    self.assertEqual(builtincmd.cmd_source(envfile), 0)
+                self.assertEqual(
+                    os.fsencode(os.environ["LSHELL_TEST_BYTES"]), b"x\xffy"
+                )
+            finally:
+                os.environ.pop("LSHELL_TEST_BYTES", None)
 
 
 if __name__ == "__main__":

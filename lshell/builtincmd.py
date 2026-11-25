@@ -107,7 +107,13 @@ def cmd_history(conf, log):
         except IOError:
             log.error(f"WARN: couldn't write history to file {conf['history_file']}\n")
             return 1
-        with open(conf["history_file"], "r", encoding="utf-8") as history_file:
+        # readline keeps each line's bytes as typed: read them in the
+        # terminal's own encoding, a byte that is no part of a letter as a
+        # surrogate, so each line is written back byte for byte
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        with open(
+            conf["history_file"], "r", encoding=encoding, errors="surrogateescape"
+        ) as history_file:
             i = 1
             for item in history_file.readlines():
                 sys.stdout.write(f"{i}:  {item}")
@@ -143,7 +149,7 @@ def cmd_source(envfile):
     envfile = envfile.strip().strip("'").strip('"')
     envfile = os.path.expanduser(os.path.expandvars(envfile))
     try:
-        with open(envfile, encoding="utf-8") as env_vars:
+        with open(envfile, encoding="utf-8", errors="surrogateescape") as env_vars:
             for env_var in env_vars.readlines():
                 line = env_var.strip()
                 if not line or line.startswith("#"):

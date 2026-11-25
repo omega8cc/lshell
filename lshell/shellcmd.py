@@ -328,7 +328,9 @@ class ShellCmd(cmd.Cmd, object):
 
     def run_script_mode(self, script):
         """Process commands from a script."""
-        with open(script, "r") as script_file:
+        # A byte that is no part of a letter reaches the checks and the log
+        # as a surrogate, as a typed one does (cli.keep_undecodable_bytes).
+        with open(script, "r", errors="surrogateescape") as script_file:
             for line in script_file:
                 line = line.strip()
                 if line:
